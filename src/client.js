@@ -455,12 +455,16 @@ window.__ModuleLoader__.load({
 		const PROMPT_LIMITS = { title: 80, description: 200, prompt: 64 * 1024 };
 
 		const managerStyles = {
-			page: { display: "flex", flexDirection: "column", gap: "14px", minWidth: 0, maxWidth: "720px", height: "100%", minHeight: 0, boxSizing: "border-box", overflowY: "auto", paddingRight: "4px", paddingBottom: "8px", color: "var(--dsw-alias-label-primary, #0f1115)" },
-			title: { margin: 0, fontSize: "18px", lineHeight: "24px", fontWeight: 600 },
-			intro: { margin: "-4px 0 0", fontSize: "13px", lineHeight: "20px", color: "var(--dsw-alias-label-tertiary, #81858c)" },
-			body: { display: "flex", gap: "16px", alignItems: "flex-start", flexWrap: "wrap", minWidth: 0, flexShrink: 0 },
-			list: { flex: "0 0 190px", minWidth: "160px", display: "flex", flexDirection: "column", gap: "3px", paddingRight: "2px", flexShrink: 0 },
-			editor: { flex: "1 1 300px", minWidth: "240px", display: "flex", flexDirection: "column", gap: "12px", flexShrink: 0 },
+			page: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0, maxWidth: "760px", height: "100%", minHeight: 0, boxSizing: "border-box", color: "var(--dsw-alias-label-primary, #0f1115)" },
+			header: { display: "flex", flexDirection: "column", gap: "12px", flexShrink: 0 },
+			title: { margin: 0, fontSize: "18px", fontWeight: 600 },
+			intro: { margin: 0, fontSize: "13px", color: "var(--dsw-alias-label-tertiary, #81858c)" },
+			body: { display: "flex", gap: "16px", alignItems: "stretch", flexWrap: "wrap", minWidth: 0, flex: "1 1 auto", minHeight: 0 },
+			list: { flex: "0 0 190px", minWidth: "160px", display: "flex", flexDirection: "column", minHeight: 0 },
+			listScroll: { display: "flex", flexDirection: "column", gap: "3px", paddingRight: "2px", flex: "1 1 auto", minHeight: 0, overflowY: "auto" },
+			listFooter: { flexShrink: 0, paddingTop: "6px" },
+			editor: { flex: "1 1 300px", minWidth: "240px", display: "flex", flexDirection: "column", gap: "12px", minHeight: 0 },
+			preset: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0, flex: "1 1 auto", minHeight: 0 },
 			group: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px 2px", fontSize: "11px", lineHeight: "16px", letterSpacing: "0.03em", color: "var(--dsw-alias-label-caption, #adb2b8)" },
 			rowTitle: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "13px", lineHeight: "18px", fontWeight: 500 },
 			rowDesc: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px", lineHeight: "16px", color: "var(--dsw-alias-label-caption, #adb2b8)" },
@@ -513,13 +517,18 @@ window.__ModuleLoader__.load({
 				React.createElement("span", { style: managerStyles.rowDesc }, description || " "));
 		}
 
-		function PromptTextField({ label, value, placeholder, maxLength, readOnly, multiline, onChange, onBlur }) {
+		function PromptTextField({ label, value, placeholder, maxLength, readOnly, multiline, fill, onChange, onBlur }) {
 			const [focused, setFocused] = useState(false);
 			const focusStyle = focused && !readOnly
 				? { borderColor: "var(--dsw-alias-state-business-primary, #4176e6)", background: "var(--dsw-alias-bg-layer-1, #fff)" }
 				: null;
 			const base = multiline ? managerStyles.textarea : managerStyles.input;
-			const style = Object.assign({}, base, focusStyle, readOnly ? { color: "var(--dsw-alias-label-secondary, #61666b)" } : null);
+			/* Fill mode stretches the prompt box to the column's remaining height. */
+			const grow = fill && multiline
+				? { flexGrow: 1, flexShrink: 1, flexBasis: "auto", height: "auto", minHeight: "160px", maxHeight: "none", resize: "none" }
+				: null;
+			const style = Object.assign({}, base, grow, focusStyle, readOnly ? { color: "var(--dsw-alias-label-secondary, #61666b)" } : null);
+			const fieldStyle = fill ? Object.assign({}, managerStyles.field, { flexGrow: 1, flexShrink: 1, flexBasis: "auto", minHeight: 0 }) : managerStyles.field;
 			const common = {
 				value: value === undefined || value === null ? "" : value,
 				placeholder,
@@ -539,14 +548,14 @@ window.__ModuleLoader__.load({
 		}
 
 		function BuiltinPresetView({ preset }) {
-			return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0, flexShrink: 0 } },
+			return React.createElement("div", { style: managerStyles.preset },
 				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 } },
 					React.createElement("span", { style: { fontSize: "14px", lineHeight: "22px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, preset.title),
 					React.createElement("span", { style: managerStyles.badge }, L.builtinBadge)),
 				React.createElement("div", { style: managerStyles.hint }, L.readOnlyHint),
 				React.createElement(PromptTextField, { label: L.titleLabel, value: preset.title, readOnly: true }),
 				React.createElement(PromptTextField, { label: L.descriptionLabel, value: goalDescription(preset.id, preset.description), readOnly: true }),
-				React.createElement(PromptTextField, { label: L.promptLabel, value: preset.prompt, readOnly: true, multiline: true }));
+				React.createElement(PromptTextField, { label: L.promptLabel, value: preset.prompt, readOnly: true, multiline: true, fill: true }));
 		}
 
 		/* One custom preset: local draft + debounced write-through. The write
@@ -625,7 +634,7 @@ window.__ModuleLoader__.load({
 			};
 
 			const incomplete = !draft.title.trim() || !draft.prompt.trim();
-			return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0, flexShrink: 0 } },
+			return React.createElement("div", { style: managerStyles.preset },
 				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 } },
 					React.createElement("span", { style: { fontSize: "14px", lineHeight: "22px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, draft.title.trim() || L.untitled),
 					React.createElement("span", { style: managerStyles.badge }, L.customBadge),
@@ -633,7 +642,7 @@ window.__ModuleLoader__.load({
 					React.createElement("span", { style: status === "error" ? managerStyles.error : managerStyles.hint, title: message || undefined }, statusText(status, message))),
 				React.createElement(PromptTextField, { label: L.titleLabel, value: draft.title, placeholder: L.titlePlaceholder, maxLength: PROMPT_LIMITS.title, onChange: (value) => change("title", value), onBlur: () => flush(false) }),
 				React.createElement(PromptTextField, { label: L.descriptionLabel, value: draft.description, placeholder: L.descriptionPlaceholder, maxLength: PROMPT_LIMITS.description, onChange: (value) => change("description", value), onBlur: () => flush(false) }),
-				React.createElement(PromptTextField, { label: L.promptLabel, value: draft.prompt, placeholder: L.promptPlaceholder, maxLength: PROMPT_LIMITS.prompt, multiline: true, onChange: (value) => change("prompt", value), onBlur: () => flush(false) }),
+				React.createElement(PromptTextField, { label: L.promptLabel, value: draft.prompt, placeholder: L.promptPlaceholder, maxLength: PROMPT_LIMITS.prompt, multiline: true, fill: true, onChange: (value) => change("prompt", value), onBlur: () => flush(false) }),
 				incomplete ? React.createElement("div", { style: managerStyles.hint }, L.draftHint) : null,
 				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap", paddingTop: "2px" } },
 					confirming
@@ -711,7 +720,7 @@ window.__ModuleLoader__.load({
 			const selected = entries.find((entry) => promptKey(entry) === selectedKey) || null;
 
 			return React.createElement("div", { style: managerStyles.page },
-				React.createElement("div", { style: { flexShrink: 0 } },
+				React.createElement("div", { style: managerStyles.header },
 					React.createElement("h2", { style: managerStyles.title }, L.manageTitle),
 					React.createElement("p", { style: managerStyles.intro }, L.manageIntro)),
 				error ? React.createElement("div", { style: Object.assign({}, managerStyles.banner, managerStyles.error) }, error,
@@ -721,7 +730,8 @@ window.__ModuleLoader__.load({
 					? React.createElement("div", { style: managerStyles.hint }, loading ? L.loading : L.loadFailed)
 					: React.createElement("div", { style: managerStyles.body },
 						React.createElement("div", { style: managerStyles.list },
-							React.createElement("div", { style: managerStyles.group }, L.builtinGroup),
+							React.createElement("div", { style: managerStyles.listScroll },
+								React.createElement("div", { style: managerStyles.group }, L.builtinGroup),
 							builtins.map((entry) => React.createElement(PromptListRow, {
 								key: "builtin:" + entry.id,
 								entry: Object.assign({}, entry, { kind: "builtin" }),
@@ -729,26 +739,27 @@ window.__ModuleLoader__.load({
 								onSelect: () => { setSelectedKey("builtin:" + entry.id); setNotice(""); },
 							})),
 							React.createElement("div", { style: Object.assign({}, managerStyles.group, { marginTop: "4px" }) }, L.customGroup),
-							custom.length === 0
-								? React.createElement("div", { style: Object.assign({}, managerStyles.hint, { padding: "2px 9px" }) }, L.noCustom)
-								: custom.map((entry) => React.createElement(PromptListRow, {
-									key: "custom:" + entry.id,
-									entry: Object.assign({}, entry, { kind: "custom" }),
-									selected: selectedKey === "custom:" + entry.id,
-									onSelect: () => { setSelectedKey("custom:" + entry.id); setNotice(""); },
-								})),
-							React.createElement("button", {
+									custom.length === 0
+									? React.createElement("div", { style: Object.assign({}, managerStyles.hint, { padding: "2px 9px" }) }, L.noCustom)
+									: custom.map((entry) => React.createElement(PromptListRow, {
+											key: "custom:" + entry.id,
+											entry: Object.assign({}, entry, { kind: "custom" }),
+											selected: selectedKey === "custom:" + entry.id,
+											onSelect: () => { setSelectedKey("custom:" + entry.id); setNotice(""); },
+										}))),
+							React.createElement("div", { style: managerStyles.listFooter },
+								React.createElement("button", {
 								type: "button",
 								onClick: add,
 								disabled: creating,
 								style: {
-									marginTop: "6px", display: "flex", alignItems: "center", justifyContent: "center",
-									width: "100%", height: "34px", border: "1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18))",
-									borderRadius: "8px", background: "transparent",
-									color: creating ? "var(--dsw-alias-label-caption, #adb2b8)" : "var(--dsw-alias-label-secondary, #61666b)",
-									font: "inherit", fontSize: "12px", cursor: creating ? "default" : "pointer",
-								},
-							}, "+ " + L.add)),
+										display: "flex", alignItems: "center", justifyContent: "center",
+										width: "100%", height: "34px", border: "1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18))",
+										borderRadius: "8px", background: "transparent",
+										color: creating ? "var(--dsw-alias-label-caption, #adb2b8)" : "var(--dsw-alias-label-secondary, #61666b)",
+										font: "inherit", fontSize: "12px", cursor: creating ? "default" : "pointer",
+									},
+								}, "+ " + L.add))),
 						React.createElement("div", { style: managerStyles.editor },
 							selected === null
 								? React.createElement("div", { style: managerStyles.hint }, L.emptySelection)
