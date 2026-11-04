@@ -1,6 +1,6 @@
 /* Browser half of dsh-mode-mod. Occupies conversation.hero.options — the
- * compact right-aligned controls of the New Session row, right after the
- * agent-preset (mode) control — for the system-prompt-preset dimension:
+ * plugin controls of the New Session row, right after the agent-preset
+ * (mode) control — for the system-prompt-preset dimension:
  * a goal <select> (none + the seven development goals) writing the SESSION
  * tier through POST /api/mode-mod/goal. The PROJECT tier is managed through
  * the select's context menu (right click: set current goal as the project
@@ -67,6 +67,26 @@ window.__ModuleLoader__.load({
 			clear: "Clear project default",
 			menuHint: "right click for project default",
 		};
+
+		/* The host seats .heroOptions at the row's right edge via
+		 * margin-left:auto. This picker belongs directly beside the mode
+		 * control, so neutralize that margin on the wrapping div from inside:
+		 * inline style outranks the CSS-module rule and React never touches
+		 * that div's style attribute. Browsers resolve the auto margin to its
+		 * used pixel value in getComputedStyle, so recognize the div by its
+		 * CSS-module class substring (hash prefix varies); the auto check is a
+		 * fallback for engines that report it literally. */
+		function alignBesideModeControl(node) {
+			if (!node) return;
+			let el = node.parentElement;
+			for (let depth = 0; el && depth < 4; depth++, el = el.parentElement) {
+				const cls = typeof el.className === "string" ? el.className : "";
+				if (cls.indexOf("heroOptions") !== -1 || getComputedStyle(el).marginLeft === "auto") {
+					el.style.marginLeft = "0";
+					return;
+				}
+			}
+		}
 
 		function tierName(state) {
 			if (state.sessionValue !== null) return state.sessionValueName;
@@ -150,6 +170,7 @@ window.__ModuleLoader__.load({
 			}
 			return React.createElement(React.Fragment, null,
 				React.createElement("select", {
+					ref: alignBesideModeControl,
 					value: state.effectiveGoal ?? "",
 					onChange,
 					onContextMenu,
@@ -159,7 +180,7 @@ window.__ModuleLoader__.load({
 					style: {
 						background: "transparent", border: "1px solid rgba(128,128,128,.45)", borderRadius: "4px",
 						padding: "1px 2px", font: "inherit", color: "inherit", cursor: busy ? "wait" : "pointer",
-						maxWidth: "9em",
+						maxWidth: "9em", marginLeft: "6px",
 					},
 				},
 					React.createElement("option", { value: "" }, L.none),
