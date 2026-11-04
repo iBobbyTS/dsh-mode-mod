@@ -1,11 +1,18 @@
-/* Browser half of dsh-mode-mod. Occupies conversation.hero.options — the
- * plugin controls of the New Session row, right after the agent-preset
- * (mode) control — for the system-prompt-preset dimension: a goal dropdown
- * (none + the seven development goals) writing the SESSION tier through
- * POST /api/mode-mod/goal. The dropdown is the host's own idiom — Menu plus
- * icons from dsh-client-ui-primitives (a PLATFORM_MODULES baseline row every
- * dynamic bundle may require) — with the trigger styled like the official
- * agent-preset seat button; no native <select>. "None" is a real peer
+/* Browser half of dsh-mode-mod. Seats the system-prompt-preset (goal)
+ * dropdown twice, both times right after the shipped agent-preset (mode)
+ * control:
+ *   - conversation.hero.options, the New Session row, with the project-star
+ *     affordance on every row;
+ *   - conversation.session.header.actions at order 0 (the mode chip itself
+ *     sits at -10), so a running Session can switch preset mid-conversation
+ *     from the header, beside the mode chip. The header seat carries no star:
+ *     there the dropdown is a switch, not the project-default editor.
+ * Writes the SESSION tier through POST /api/mode-mod/goal. The dropdown is
+ * the host's own idiom — Menu plus icons from dsh-client-ui-primitives (a
+ * PLATFORM_MODULES baseline row every dynamic bundle may require) — with the
+ * hero trigger styled like the official agent-preset seat button and the
+ * header trigger like the header's agent-preset label; no native <select>.
+ * "None" is a real peer
  * option whose value is the string "none" — an explicit choice that
  * injects no goal text — while null means not selected (inherit). The
  * PROJECT tier is a star on each row's right edge: click ☆ to make that
@@ -158,7 +165,9 @@ window.__ModuleLoader__.load({
 
 		const NONE_ID = "__none__";
 
-		function ModeModGoalPicker({ sessionId, modeMod }) {
+		function ModeModGoalPicker({ sessionId, modeMod, seat }) {
+			// "header" is the in-session seat beside the mode chip: a switch only.
+			const headerSeat = seat === "header";
 			const [state, setState] = useState(null);
 			const [busy, setBusy] = useState(false);
 			const [goalOpen, setGoalOpen] = useState(false);
@@ -168,23 +177,41 @@ window.__ModuleLoader__.load({
 
 			useEffect(() => {
 				let alive = true;
+				let pending = 0;
 				let attempts = 0;
-				const attempt = () => {
-					if (!alive) return;
-					modeMod.load(sessionId).then((next) => {
-						if (!alive) return;
-						setState(next);
-						// The header can mount before the host registers the fresh
-						// session (agent/created race); retry briefly instead of
-						// hiding forever.
-						if (next.known !== true && attempts++ < 8) setTimeout(attempt, 500);
-					}).catch(() => { if (alive) setState({ known: false }); });
+				const load = () => {
+					clearTimeout(pending);
+					modeMod.load(sessionId)
+						.then((next) => {
+							if (!alive) return;
+							setState(next);
+							// A session opened now may still be resuming its agent; the
+							// host answers "no record" until it exists, so re-read a few
+							// times before settling on that answer.
+							if (next.known !== true && attempts < 5) pending = setTimeout(load, 700 * ++attempts);
+						})
+						.catch(() => { if (alive) setState((current) => current ?? { known: false }); });
 				};
-				attempt();
-				return () => { alive = false; };
+				load();
+				// The effective goal can change outside this control: a project
+				// default starred in the hero row, a session value frozen on the
+				// session's first turn, another window's picker. Re-read when the
+				// window comes back to the foreground.
+				const onVisible = () => { if (document.visibilityState !== "hidden") load(); };
+				window.addEventListener("focus", load);
+				document.addEventListener("visibilitychange", onVisible);
+				return () => {
+					alive = false;
+					clearTimeout(pending);
+					window.removeEventListener("focus", load);
+					document.removeEventListener("visibilitychange", onVisible);
+				};
 			}, [sessionId, modeMod]);
 
-			if (state === null || state.known !== true) return null;
+			// A session the host has no live record of still renders: the API
+			// answers with no goal rather than refusing, so the header never
+			// loses its preset control.
+			if (state === null) return null;
 
 			const pick = async (value) => {
 				if (busy) return;
@@ -197,17 +224,47 @@ window.__ModuleLoader__.load({
 				try { setState(await modeMod.project(sessionId, value)); } catch {} finally { setBusy(false); }
 			};
 
-			const title = L.goal + " · " + L.session + ": " + tierName(state)
+			// A session the host has no record of reads as no goal; the tiers
+			// below it are unknown, so the tooltip must not claim them.
+			const unrecorded = state.known !== true;
+			const title = unrecorded ? L.goal + " · " + L.none : L.goal + " · " + L.session + ": " + tierName(state)
 				+ " | " + L.project + ": " + (state.projectValue === null ? L.unselect : (state.projectValueName ?? L.none))
 				+ " | " + L.globalTier + ": " + (state.globalValueName ?? L.none)
 				+ "  ·  " + L.starHint;
 
-			/* Seat-button geometry mirrors AgentPresetSeat.module.css .seat; hover
-			 * and open fill need a state because inline styles cannot express
-			 * :hover / [aria-expanded]. */
+			/* Hero geometry mirrors AgentPresetSeat.module.css .seat; the header
+			 * seat mirrors AgentPresetLabel.module.css .label (the mode chip it
+			 * sits beside): 22px tall, 12px text, fill-tsp-secondary at rest.
+			 * Hover and open fill need a state because inline styles cannot
+			 * express :hover / [aria-expanded]. */
+			const triggerStyle = headerSeat ? {
+				display: "inline-flex", alignItems: "center", gap: "4px",
+				height: "22px", padding: "0 4px 0 2px", border: "none",
+				borderRadius: "var(--dsw-radius-xs)",
+				background: hover || goalOpen ? "var(--dsw-alias-interactive-bg-hover)" : "var(--dsw-alias-fill-tsp-secondary)",
+				color: busy
+					? "var(--dsw-alias-label-quaternary)"
+					: hover || goalOpen ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-tertiary)",
+				fontSize: "12px", lineHeight: "22px", fontWeight: 500,
+				whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
+				maxWidth: "180px",
+			} : {
+				display: "inline-flex", alignItems: "center", gap: "4px",
+				minHeight: "28px", padding: "0 8px", border: "none",
+				borderRadius: "var(--dsw-radius-sm)",
+				background: hover || goalOpen ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+				color: busy ? "var(--dsw-alias-label-quaternary)" : "var(--dsw-alias-label-primary)",
+				fontSize: "13px", lineHeight: "20px", fontWeight: 500,
+				whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
+				maxWidth: "min(100%, 240px)", marginLeft: "6px",
+			};
+
 			const trigger = React.createElement("button", {
 				type: "button",
-				ref: (node) => { buttonRef.current = node; alignBesideModeControl(node); },
+				ref: (node) => {
+					buttonRef.current = node;
+					if (!headerSeat) alignBesideModeControl(node);
+				},
 				onClick: () => setGoalOpen((open) => !open),
 				onMouseEnter: () => setHover(true),
 				onMouseLeave: () => setHover(false),
@@ -216,18 +273,9 @@ window.__ModuleLoader__.load({
 				"aria-expanded": goalOpen,
 				"aria-label": L.goal,
 				title,
-				style: {
-					display: "inline-flex", alignItems: "center", gap: "4px",
-					minHeight: "28px", padding: "0 8px", border: "none",
-					borderRadius: "var(--dsw-radius-sm)",
-					background: hover || goalOpen ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
-					color: busy ? "var(--dsw-alias-label-quaternary)" : "var(--dsw-alias-label-primary)",
-					fontSize: "13px", lineHeight: "20px", fontWeight: 500,
-					whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
-					maxWidth: "min(100%, 240px)", marginLeft: "6px",
-				},
+				style: triggerStyle,
 			},
-				React.createElement(IconGoalOutlineRegular, { key: "icon" }),
+				React.createElement(IconGoalOutlineRegular, { key: "icon", size: headerSeat ? 14 : 16 }),
 				React.createElement("span", {
 					key: "label",
 					style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
@@ -249,6 +297,9 @@ window.__ModuleLoader__.load({
 			 * 14px glyph), which narrows its label box; the extra margin keeps
 			 * every star in the same right-aligned column either way. */
 			const starFor = (value, isSelected) => {
+				// The header seat switches the session preset only; the project
+				// default stays with the New Session dropdown.
+				if (headerSeat) return null;
 				const starred = starredValue === value;
 				return React.createElement("span", {
 					"aria-label": starred ? L.clearStar : L.setStar,
@@ -286,7 +337,7 @@ window.__ModuleLoader__.load({
 				items: goalItems,
 				selectedId: state.effectiveGoal ?? NONE_ID,
 				onSelect: (id) => { setGoalOpen(false); void pick(id === NONE_ID ? "none" : id); },
-				align: "start",
+				align: headerSeat ? "end" : "start",
 				portal: true,
 				anchor: trigger,
 			});
@@ -305,7 +356,16 @@ window.__ModuleLoader__.load({
 				id: "mode-mod-goal-picker",
 				// First occupant of the hero options list, right after the mode control.
 				order: 0,
-				inject: (sessionId) => ({ modeMod: { ...face, labels: L } }),
+				inject: (sessionId) => ({ modeMod: { ...face, labels: L }, seat: "hero" }),
+			}, ModeModGoalPicker));
+			// The in-session seat, beside the mode chip (that label is order -10;
+			// background tasks follow at 20). Exists only where the header renders,
+			// i.e. after the conversation starts and the hero is gone.
+			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
+				name: "conversation.session.header.actions",
+				id: "mode-mod-goal-switch",
+				order: 0,
+				inject: (sessionId) => ({ modeMod: { ...face, labels: L }, seat: "header" }),
 			}, ModeModGoalPicker));
 		}
 

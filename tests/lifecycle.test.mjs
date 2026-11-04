@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { apply } from '../src/index.js'
 import { PTC_GUIDANCE_TEXT } from '../src/guidance.js'
+
+// The plugin reads and writes plugin data under DSH_HOME; keep the suite off
+// the developer's real store.
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'mode-mod-lifecycle-'))
 
 function fixture() {
   const pluginEffects = []
   const agentEffects = []
   const sections = new Map()
+  const handlers = new Map()
   let onCreated
   let active = true
   let preset = 'ptc'
@@ -26,8 +34,13 @@ function fixture() {
       return registry
     },
     webServer: { register: () => () => {} },
+    get: (name) => (name === 'agents' ? { list: () => [] } : undefined),
     effect: (fn) => pluginEffects.push(fn()),
-    on: (_, fn) => { onCreated = fn; return () => { onCreated = undefined } },
+    on: (event, fn) => {
+      handlers.set(event, fn)
+      if (event === 'agent/created') onCreated = fn
+      return () => { handlers.delete(event); if (event === 'agent/created') onCreated = undefined }
+    },
   }
   const agent = {
     id: 'test-agent',

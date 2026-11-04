@@ -7,6 +7,13 @@
  * each top-level agent (src/index.js). Goals therefore never appear as agent
  * presets, and no goal text is coupled to a particular preset tree — the
  * version-coupled PTC clone machinery this file used to carry is gone.
+ *
+ * Mid-session switches keep the SAME section and swap only its text: the
+ * header below is prepended from the first assembly AFTER a switch so the
+ * model knows the new preset supersedes the earlier one still visible in
+ * history. It then stays (renderGoalSection) so an unchanged selection keeps
+ * the rendered text byte-identical and the harness never re-commits the
+ * system prompt for a switch that did not happen.
  * @module @local/dsh-mode-mod/presets
  */
 
@@ -29,6 +36,23 @@ export const GOALS = [
 ]
 
 /**
+ * The short header prepended to a goal body from the first assembly after a
+ * mid-session switch. It states the replacement relationship, keeps task
+ * continuity, and bounds the change's effect — it grants nothing.
+ */
+export const ACTIVE_PRESET_HEADER = [
+  '# Active Development Preset',
+  '',
+  'The following preset defines the engineering approach, implementation depth, and validation expectations for the active development mode.',
+  '',
+  'It supersedes any previously selected development preset in this session and applies to subsequent work, including the continuation of the current task.',
+  '',
+  'Preserve established facts, completed work, and prior user decisions. Do not restart or re-evaluate completed work solely because the preset changed.',
+  '',
+  'This preset does not grant additional permissions or override explicit user requirements, repository instructions, or tool restrictions.',
+].join('\n')
+
+/**
  * Read every goal prompt from the package's prompts/ directory.
  * @returns goal id to trimmed text.
  */
@@ -38,4 +62,30 @@ export function loadGoalTexts() {
     texts[goal.id] = readFileSync(join(PACKAGE_ROOT, 'prompts', goal.file), 'utf8').trim()
   }
   return texts
+}
+
+/**
+ * Render the goal section text for one assembly of one agent.
+ *
+ * The header appears exactly on assemblies that follow a goal change (a
+ * switch, or a return from an explicit none) and on every assembly after the
+ * first such change: once shown it stays, so a goal that no longer changes
+ * renders byte-identical text and the harness commits no new system-prompt
+ * version. A first assembly in a process (fresh or resumed session) renders
+ * the plain body — a resumed session that never switched in this process
+ * matches the text it committed before, and one that did switch settles on
+ * the next assembly.
+ * @param {string|null} goal - the resolved goal id, or null for explicit none.
+ * @param {string} body - the goal's prompt text; '' when the goal is none.
+ * @param {{goal: string|null, header: boolean}|undefined} previous - the
+ *   state left by the previous assembly of this agent in this process.
+ * @returns {{text: string, state: {goal: string|null, header: boolean}}} the
+ *   section text for this assembly and the state to carry to the next one.
+ */
+export function renderGoalSection(goal, body, previous) {
+  const header = previous !== undefined && (previous.goal !== goal || previous.header) && body !== ''
+  return {
+    text: header ? ACTIVE_PRESET_HEADER + '\n\n' + body : body,
+    state: { goal, header },
+  }
 }
