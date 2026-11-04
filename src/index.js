@@ -15,7 +15,9 @@
  *    the goal by tier: session override (plugin-owned store keyed by session
  *    id — the harness session log rejects event types unknown to it, so
  *    third-party plugin state lives in plugin data, not session events) >
- *    project default (plugin store) > global default (config.defaultGoal);
+ *    project default (plugin store) > global default (config.defaultGoal)
+ *    — at any tier, "none" pins no goal and blocks the tiers beneath while
+ *    an absent (null) entry inherits from the tier beneath;
  *  - a goal change writes the session override and the next assembly picks
  *    it up; mid-session changes ride the harness's in-history prompt
  *    admission.
@@ -26,8 +28,8 @@
  *
  * Same-origin JSON API for the browser half:
  *   GET  /api/mode-mod/state?session=<id>   tier-by-tier goal state
- *   POST /api/mode-mod/goal                 { session, value } (value null = none)
- *   POST /api/mode-mod/project              { session, value } (value null clears)
+ *   POST /api/mode-mod/goal                 { session, value } (value null = unselect; "none" = explicit none)
+ *   POST /api/mode-mod/project              { session, value } (value null clears; "none" = explicit none)
  * @module @local/dsh-mode-mod
  */
 
@@ -110,25 +112,45 @@ export function apply(ctx, config = {}) {
   refreshStore()
 
   /**
-   * Resolve the goal a session currently runs, session tier first.
+   * Map one tier's stored value to its goal choice: "none" pins no goal, a
+   * known id selects it, anything else (or absent) made no choice.
+   * @param value - a stored session-override or project value.
+   * @returns the goal id, null for none, or undefined when the tier did not choose.
+   */
+  const tierGoal = (value) => (value === 'none' ? null : goalById.has(value) ? value : undefined)
+
+  /**
+   * Resolve the goal a session currently runs, session tier first, then
+   * project, then the global default. An explicit "none" at any tier stops
+   * the walk; an absent (null) entry inherits from the tier beneath.
    * @param agent - the top-level agent.
    * @returns the goal id, or null for none.
    */
   const goalFor = (agent) => {
-    if (Object.hasOwn(overridesSnapshot.sessions, agent.session.id)) {
-      const override = overridesSnapshot.sessions[agent.session.id] ?? null
-      return override !== null && goalById.has(override) ? override : null
-    }
+    const sessionTier = tierGoal(overridesSnapshot.sessions[agent.session.id])
+    if (sessionTier !== undefined) return sessionTier
     const cwd = agent.session.header.cwd
     if (cwd !== undefined) {
-      const value = lookupProjectValue(storeSnapshot, resolveProjectRoot(cwd))
-      if (value !== undefined && goalById.has(value)) return value
+      const projectTier = tierGoal(lookupProjectValue(storeSnapshot, resolveProjectRoot(cwd)))
+      if (projectTier !== undefined) return projectTier
     }
     return defaultGoal ?? null
   }
 
   // 1. Per-agent prompt sections, registered through each agent's own scope.
   ctx.effect(() => {
+    // Agent scopes can outlive this plugin during hot reload. Release their
+    // registrations on either lifetime, so no provider retains a dead plugin.
+    const sectionDisposers = new Set()
+    const sectionFor = (agent, prompt, section, label) => agent.ctx.effect(() => {
+      const unregister = prompt.section(section)
+      const dispose = () => {
+        if (!sectionDisposers.delete(dispose)) return
+        unregister()
+      }
+      sectionDisposers.add(dispose)
+      return dispose
+    }, label)
     const offCreated = ctx.on('agent/created', ({ agent }) => {
       try {
         const prompt = agent.ctx.get('systemPrompt')
@@ -139,40 +161,46 @@ export function apply(ctx, config = {}) {
         if (agent.session.header.parentSession === undefined) {
           sessions.set(agent.session.id, { agent, cwd: agent.session.header.cwd })
           // Registered on the agent's fiber: disposed with the agent, scoped to it alone.
-          agent.ctx.effect(() => prompt.section({
+          sectionFor(agent, prompt, {
             name: 'mode-mod:goal',
             order: prompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX') + 1,
             text: () => texts[goalFor(agent)] ?? '',
-          }), 'mode-mod: goal section')
+          }, 'mode-mod: goal section')
         }
-        agent.ctx.effect(() => prompt.section({
+        sectionFor(agent, prompt, {
           name: 'mode-mod:ptc-guidance',
           order: prompt.getSectionOrder('TOOLS_SDK') + 1,
           text: (context) => {
             const target = context?.agent ?? agent
-            const preset = ctx.agentPresets.composedPreset(target.ctx)
+            const preset = target.ctx.get('agentPresets')?.composedPreset(target.ctx)
             return GUIDANCE_PRESETS.has(preset) ? PTC_GUIDANCE_TEXT : ''
           },
-        }), 'mode-mod: guidance section')
+        }, 'mode-mod: guidance section')
       } catch (error) {
         ctx.logger.warn('mode-mod: per-agent sections failed for ' + agent.id + ': ' + (error?.message ?? error))
       }
     })
-    return () => { offCreated?.(); sessions.clear() }
+    return () => {
+      offCreated?.()
+      for (const dispose of sectionDisposers) dispose()
+      sessions.clear()
+    }
   }, 'mode-mod: agent sections')
 
   // 2. The same-origin API for the browser half.
   ctx.effect(() => {
-    const display = (id) => id === null || id === undefined ? null : (goalById.get(id)?.name ?? id)
+    const display = (id) => id === null || id === undefined || id === 'none' ? null : (goalById.get(id)?.name ?? id)
     const stateOf = async (record) => {
       await refreshStore()
       const id = record.agent.session.id
-      const sessionValue = Object.hasOwn(overridesSnapshot.sessions, id) ? (overridesSnapshot.sessions[id] ?? null) : null
+      // Value domain per tier: null = not selected (inherit); "none" =
+      // explicit no goal (blocks the tiers beneath); a goal id = that goal.
+      const sessionValue = overridesSnapshot.sessions[id] ?? null
       const root = record.cwd === undefined ? undefined : resolveProjectRoot(record.cwd)
       const projectValue = root === undefined ? undefined : lookupProjectValue(storeSnapshot, root)
-      const effective = sessionValue !== null ? sessionValue
-        : projectValue !== undefined && goalById.has(projectValue) ? projectValue
-          : defaultGoal ?? null
+      const sessionTier = tierGoal(sessionValue)
+      const projectTier = tierGoal(projectValue ?? null)
+      const effective = sessionTier !== undefined ? sessionTier : projectTier !== undefined ? projectTier : (defaultGoal ?? null)
       return {
         projectRoot: root,
         projectValue: projectValue ?? null,
@@ -208,13 +236,13 @@ export function apply(ctx, config = {}) {
         try { body = await readJsonBody(req) } catch { json(res, 400, { error: 'invalid body' }); return }
         const record = sessions.get(typeof body.session === 'string' ? body.session : '')
         if (record === undefined) { json(res, 404, { error: 'unknown session' }); return }
-        if (body.value !== null && !goalById.has(body.value)) {
+        if (body.value !== null && body.value !== 'none' && !goalById.has(body.value)) {
           json(res, 400, { error: 'unknown goal', value: body.value ?? null })
           return
         }
         try {
           overridesSnapshot = await setSessionOverride(record.agent.session.id, body.value ?? null)
-          ctx.logger.info('mode-mod: session ' + record.agent.session.id + ' goal -> ' + (body.value ?? 'none'))
+          ctx.logger.info('mode-mod: session ' + record.agent.session.id + ' goal -> ' + (body.value ?? 'unselected'))
           json(res, 200, { known: true, sessionId: record.agent.session.id, ...(await stateOf(record)), goals: goalsPayload() })
         } catch (error) {
           json(res, 500, { error: 'write failed', detail: error?.message ?? String(error) })
@@ -230,7 +258,7 @@ export function apply(ctx, config = {}) {
         try { body = await readJsonBody(req) } catch { json(res, 400, { error: 'invalid body' }); return }
         const record = sessions.get(typeof body.session === 'string' ? body.session : '')
         if (record === undefined || record.cwd === undefined) { json(res, 404, { error: 'unknown session' }); return }
-        if (body.value !== null && !goalById.has(body.value)) {
+        if (body.value !== null && body.value !== 'none' && !goalById.has(body.value)) {
           json(res, 400, { error: 'unknown goal', value: body.value ?? null })
           return
         }

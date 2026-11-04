@@ -23,7 +23,10 @@ as a separate, independently selectable dimension. Evolves
    (`$DSH_HOME/plugin/data/mode-mod/project-system-prompt-preset.json`,
    absolute git-root keys, longest-prefix match) > global default
    (`config.defaultGoal` in the plugin's bundle patch, currently
-   `prototype`). A goal change takes effect on the next model turn.
+   `prototype`). At any tier, `null` (absent) means not selected and
+   inherits from the tier beneath, while `"none"` is an explicit no-goal
+   choice that blocks the tiers beneath it. A goal change takes effect on
+   the next model turn.
 3. **New-session-row GUI** — occupies `conversation.hero.options` and
    neutralizes the host's right-edge seating (`margin-left: auto` on the
    slot wrapper), so the goal dropdown sits left-aligned directly beside
@@ -31,9 +34,16 @@ as a separate, independently selectable dimension. Evolves
    and icons required from the `dsh-client-ui-primitives` baseline row,
    with the seat-button geometry of the official agent-preset chip — not a
    native `<select>`; rows carry the goal name over its description and a
-   check on the effective goal, and selecting one writes the session tier.
-   Right-clicking the trigger opens the project-default menu (set current
-   goal / clear). Served by
+   check on the effective goal, and selecting one writes the session tier —
+   including "None", a real peer option that pins the session to an
+   explicit no-goal choice (`"none"`), so no goal text is injected. Each
+   row's right edge carries a star (inline SVG: the UI kit has no star
+   glyph) marking the PROJECT default: click ☆ to make that row the
+   default (★, at most one; the none row's star sets a project-level
+   `"none"` that blocks the global tier), click ★ to unselect it; with no
+   project default no star shows. A star click never touches the session
+   tier and never collapses the menu.
+   Served by
    `GET /api/mode-mod/state`, `POST /api/mode-mod/goal`, and
    `POST /api/mode-mod/project` (loopback + same-origin only).
 4. **run_code guidance, host-injected** (`src/guidance.js`) — one

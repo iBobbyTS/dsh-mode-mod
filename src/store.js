@@ -114,8 +114,9 @@ export function sessionOverridesPath(home = dshHome()) {
 
 /**
  * Read the session-goal overrides; malformed content degrades to empty.
- * Shape: { version: 1, sessions: { "<session id>": "<goal id>" | null } }
- * (null = explicitly no goal for that session; absent = no override).
+ * Shape: { version: 1, sessions: { "<session id>": "<goal id>" | "none" } }
+ * ("none" = explicitly no goal; absent = not selected, inherits). Older
+ * documents stored null for an explicit none — migrated to "none" on read.
  * @param home - the DSH home root.
  * @returns the parsed document.
  */
@@ -126,6 +127,9 @@ export async function readSessionOverrides(home = dshHome()) {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
     if (parsed.version !== STORE_VERSION) throw new Error('unsupported version ' + parsed.version)
     if (parsed.sessions === null || typeof parsed.sessions !== 'object' || Array.isArray(parsed.sessions)) throw new Error('sessions is not an object')
+    for (const key of Object.keys(parsed.sessions)) {
+      if (parsed.sessions[key] === null) parsed.sessions[key] = 'none'
+    }
     return parsed
   } catch (error) {
     if (error?.code !== 'ENOENT') console.warn('mode-mod store: reading ' + sessionOverridesPath(home) + ' failed (' + (error?.message ?? error) + '); treating as empty')
@@ -134,15 +138,16 @@ export async function readSessionOverrides(home = dshHome()) {
 }
 
 /**
- * Set or clear one session's goal override and persist atomically.
+ * Set, change, or clear one session's goal override and persist atomically.
  * @param sessionId - the top-level session id.
- * @param value - a goal id, or null to pin "no goal"; undefined deletes the entry.
+ * @param value - a goal id or "none" (explicit no goal); null or undefined
+ *   deletes the entry — the session is no longer selected and inherits again.
  * @param home - the DSH home root.
  * @returns the document after the update.
  */
 export async function setSessionOverride(sessionId, value, home = dshHome()) {
   const doc = await readSessionOverrides(home)
-  if (value === undefined) delete doc.sessions[sessionId]
+  if (value === null || value === undefined) delete doc.sessions[sessionId]
   else doc.sessions[sessionId] = value
   const target = sessionOverridesPath(home)
   await mkdir(dirname(target), { recursive: true })
@@ -155,7 +160,8 @@ export async function setSessionOverride(sessionId, value, home = dshHome()) {
 /**
  * Set or clear one project's value and persist.
  * @param root - the resolved project root.
- * @param value - a goal id, or null to clear the entry.
+ * @param value - a goal id or "none" (explicit no goal, blocks the global
+ *   tier); null deletes the entry so the project inherits again.
  * @param home - the DSH home root.
  * @returns the store after the update.
  */

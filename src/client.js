@@ -5,11 +5,17 @@
  * POST /api/mode-mod/goal. The dropdown is the host's own idiom — Menu plus
  * icons from dsh-client-ui-primitives (a PLATFORM_MODULES baseline row every
  * dynamic bundle may require) — with the trigger styled like the official
- * agent-preset seat button; no native <select>. The PROJECT tier is managed
- * through the trigger's context menu (right click: set current goal as the
- * project default / clear it); the GLOBAL tier lives in the plugin's bundle
- * config. The mode dimension stays with the shipped preset picker. Wrapped
- * in an IIFE so nothing leaks into the page. */
+ * agent-preset seat button; no native <select>. "None" is a real peer
+ * option whose value is the string "none" — an explicit choice that
+ * injects no goal text — while null means not selected (inherit). The
+ * PROJECT tier is a star on each row's right edge: click ☆ to make that
+ * row the project default (★, at most one; the none row's star sets a
+ * project-level "none" that blocks the global tier), click ★ to unselect.
+ * A star click writes only the project tier — the session's own choice
+ * stays untouched — and stops the click so the menu does not collapse. The
+ * GLOBAL tier lives in the plugin's bundle config. The mode
+ * dimension stays with the shipped preset picker. Wrapped in an IIFE so
+ * nothing leaks into the page. */
 (function () {
 window.__ModuleLoader__.load({
 	id: "@local/dsh-mode-mod",
@@ -58,9 +64,10 @@ window.__ModuleLoader__.load({
 			project: "项目默认",
 			globalTier: "全局默认",
 			inherit: "(继承)",
-			set: "设为项目默认",
-			clear: "清除项目默认",
-			menuHint: "右键设置项目默认",
+			unselect: "未选择",
+			setStar: "设为项目默认",
+			clearStar: "取消项目默认",
+			starHint: "☆ = 项目默认,不影响本会话",
 		} : {
 			goal: "System-prompt preset",
 			none: "None",
@@ -69,9 +76,10 @@ window.__ModuleLoader__.load({
 			project: "project default",
 			globalTier: "global default",
 			inherit: "(inherited)",
-			set: "Set as project default",
-			clear: "Clear project default",
-			menuHint: "right click for project default",
+			unselect: "unselected",
+			setStar: "Set as project default",
+			clearStar: "Clear project default",
+			starHint: "☆ = project default; does not change this session",
 		};
 
 		/* Menu-row descriptions localized client-side; the server payload carries
@@ -110,22 +118,42 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/* A stored session value ("none" or a goal id) is the session's real
+		 * choice; null means not selected — the readout inherits from below. */
 		function tierName(state) {
-			if (state.sessionValue !== null) return state.sessionValueName;
+			if (state.sessionValue !== null) return state.sessionValueName ?? L.none;
 			if (state.projectValue !== null) return (state.projectValueName ?? L.none) + " " + L.inherit;
 			if (state.globalValue !== null) return (state.globalValueName ?? L.none) + " " + L.inherit;
 			return L.none;
 		}
 
-		/* One menu row, mirroring the official agent-preset menu: name over
-		 * description, two lines (inline styles mirror AgentPresetSeat.module.css
-		 * .item/.itemName/.itemDesc). */
-		function menuRow(name, description) {
+		/* ui-primitives ships no star glyph, so the project-default star is a
+		 * small inline SVG (currentColor, 14px — the size of the Menu's
+		 * trailing check). Outline for ☆, filled for ★. */
+		const STAR_PATH = "M8 1.7l1.85 3.74 4.12.6-2.99 2.91.71 4.11L8 11.08l-3.69 1.98.71-4.11-2.99-2.91 4.12-.6z";
+		function StarIcon({ filled }) {
+			return React.createElement("svg", {
+				width: "14", height: "14", viewBox: "0 0 16 16", "aria-hidden": true,
+				fill: filled ? "currentColor" : "none",
+				stroke: filled ? "none" : "currentColor", strokeWidth: "1.3", strokeLinejoin: "round",
+			}, React.createElement("path", { d: STAR_PATH }));
+		}
+
+		/* One menu row: name over description on the left (mirroring the
+		 * official agent-preset menu rows) with the project-default star in a
+		 * right-aligned column. The outer span fills .itemLabel (flex:1); the
+		 * text column grows, the star rides margin-left:auto to the label's
+		 * right edge, and every row reserves the 20px the Menu's trailing
+		 * selection check occupies (6px gap + 14px glyph) so stars line up in
+		 * one column on checked and unchecked rows alike. */
+		function menuRow(name, description, star) {
 			return React.createElement("span", {
-				style: { display: "flex", flexDirection: "column", gap: "2px", maxWidth: "280px" },
+				style: { display: "flex", alignItems: "center", gap: "8px", width: "100%", minWidth: 0 },
 			},
-				React.createElement("span", { style: { fontSize: "13px", lineHeight: "20px", color: "var(--dsw-alias-label-primary)" } }, name),
-				React.createElement("span", { style: { fontSize: "12px", lineHeight: "16px", color: "var(--dsw-alias-label-caption)", whiteSpace: "normal" } }, description));
+				React.createElement("span", { style: { display: "flex", flexDirection: "column", gap: "2px", flex: "1", maxWidth: "280px", minWidth: 0 } },
+					React.createElement("span", { style: { fontSize: "13px", lineHeight: "20px", color: "var(--dsw-alias-label-primary)" } }, name),
+					React.createElement("span", { style: { fontSize: "12px", lineHeight: "16px", color: "var(--dsw-alias-label-caption)", whiteSpace: "normal" } }, description)),
+				star);
 		}
 
 		const NONE_ID = "__none__";
@@ -134,8 +162,8 @@ window.__ModuleLoader__.load({
 			const [state, setState] = useState(null);
 			const [busy, setBusy] = useState(false);
 			const [goalOpen, setGoalOpen] = useState(false);
-			const [projectOpen, setProjectOpen] = useState(false);
 			const [hover, setHover] = useState(false);
+			const [starHover, setStarHover] = useState(undefined);
 			const buttonRef = useRef(null);
 
 			useEffect(() => {
@@ -170,9 +198,9 @@ window.__ModuleLoader__.load({
 			};
 
 			const title = L.goal + " · " + L.session + ": " + tierName(state)
-				+ " | " + L.project + ": " + (state.projectValueName ?? L.none)
+				+ " | " + L.project + ": " + (state.projectValue === null ? L.unselect : (state.projectValueName ?? L.none))
 				+ " | " + L.globalTier + ": " + (state.globalValueName ?? L.none)
-				+ "  ·  " + L.menuHint;
+				+ "  ·  " + L.starHint;
 
 			/* Seat-button geometry mirrors AgentPresetSeat.module.css .seat; hover
 			 * and open fill need a state because inline styles cannot express
@@ -180,13 +208,7 @@ window.__ModuleLoader__.load({
 			const trigger = React.createElement("button", {
 				type: "button",
 				ref: (node) => { buttonRef.current = node; alignBesideModeControl(node); },
-				onClick: () => { setProjectOpen(false); setGoalOpen((open) => !open); },
-				onContextMenu: (event) => {
-					event.preventDefault();
-					event.stopPropagation();
-					setGoalOpen(false);
-					setProjectOpen(true);
-				},
+				onClick: () => setGoalOpen((open) => !open),
 				onMouseEnter: () => setHover(true),
 				onMouseLeave: () => setHover(false),
 				disabled: busy,
@@ -215,46 +237,59 @@ window.__ModuleLoader__.load({
 					style: { flex: "none", display: "inline-flex", color: "var(--dsw-alias-label-caption)" },
 				}, React.createElement(IconChevronDownOutlineRegular, null)));
 
-			const goalItems = [{ id: NONE_ID, label: menuRow(L.none, L.noneDesc) }]
+			/* Project-default star for one row; the none row's value is "none".
+			 * null (no project default) stars nothing: click ☆ selects that row as
+			 * the project default (the none row's star sets a project-level
+			 * "none" that blocks the global tier); click ★ unselects it. The
+			 * click stops propagation so the row's selection handler never
+			 * fires: the session tier is untouched and the menu stays open. */
+			const goalIds = new Set((state.goals ?? []).map((goal) => goal.id));
+			const starredValue = state.projectValue !== null && (state.projectValue === "none" || goalIds.has(state.projectValue)) ? state.projectValue : null;
+			/* isSelected: this row carries the Menu's trailing check (6px gap +
+			 * 14px glyph), which narrows its label box; the extra margin keeps
+			 * every star in the same right-aligned column either way. */
+			const starFor = (value, isSelected) => {
+				const starred = starredValue === value;
+				return React.createElement("span", {
+					"aria-label": starred ? L.clearStar : L.setStar,
+					title: starred ? L.clearStar : L.setStar,
+					onMouseEnter: () => setStarHover(value),
+					onMouseLeave: () => setStarHover((current) => current === value ? undefined : current),
+					onClick: (event) => {
+						event.stopPropagation();
+						event.preventDefault();
+						if (busy) return;
+						void runProject(starred ? null : value);
+					},
+					style: {
+						flex: "none", display: "inline-flex", padding: "4px",
+						marginLeft: "auto", marginRight: isSelected ? "4px" : "24px",
+						cursor: busy ? "default" : "pointer",
+						color: starred
+							? "var(--dsw-static-amber-500, var(--dsw-alias-label-primary))"
+							: starHover === value
+								? "var(--dsw-alias-label-primary)"
+								: "var(--dsw-alias-label-quaternary)",
+					},
+				}, React.createElement(StarIcon, { filled: starred }));
+			};
+
+			const goalItems = [{ id: NONE_ID, label: menuRow(L.none, L.noneDesc, starFor("none", (state.effectiveGoal ?? null) === null)) }]
 				.concat((state.goals ?? []).map((goal) => ({
 					id: goal.id,
-					label: menuRow(goal.name, goalDescription(goal.id, goal.description)),
+					label: menuRow(goal.name, goalDescription(goal.id, goal.description), starFor(goal.id, state.effectiveGoal === goal.id)),
 				})));
 
-			const projectItems = [];
-			if (state.effectiveGoal !== null) {
-				projectItems.push({ id: "set", label: L.set + " (" + (state.effectiveGoalName ?? "") + ")" });
-			}
-			if (state.projectValue !== null) {
-				projectItems.push({ type: "separator", id: "sep" });
-				projectItems.push({ id: "clear", label: L.clear + " (" + (state.projectValueName ?? "") + ")" });
-			}
-
-			return React.createElement(React.Fragment, null,
-				React.createElement(Menu, {
-					open: goalOpen,
-					onClose: () => setGoalOpen(false),
-					items: goalItems,
-					selectedId: state.effectiveGoal ?? NONE_ID,
-					onSelect: (id) => { setGoalOpen(false); void pick(id === NONE_ID ? null : id); },
-					align: "start",
-					portal: true,
-					anchor: trigger,
-				}),
-				projectOpen && projectItems.length > 0 && React.createElement(Menu, {
-					open: true,
-					onClose: () => setProjectOpen(false),
-					items: projectItems,
-					onSelect: (id) => {
-						setProjectOpen(false);
-						if (id === "set") void runProject(state.effectiveGoal);
-						if (id === "clear") void runProject(null);
-					},
-					align: "start",
-					portal: true,
-					anchor: null,
-					getAnchorRect: () => buttonRef.current === null ? null : buttonRef.current.getBoundingClientRect(),
-				}));
+			return React.createElement(Menu, {
+				open: goalOpen,
+				onClose: () => setGoalOpen(false),
+				items: goalItems,
+				selectedId: state.effectiveGoal ?? NONE_ID,
+				onSelect: (id) => { setGoalOpen(false); void pick(id === NONE_ID ? "none" : id); },
+				align: "start",
+				portal: true,
+				anchor: trigger,
+			});
 		}
 
 		const inject = ["slots"];
