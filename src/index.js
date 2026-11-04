@@ -50,7 +50,11 @@
 
 import { GOALS, loadGoalTexts, renderGoalSection } from './presets.js'
 import { PTC_GUIDANCE_TEXT } from './guidance.js'
-import { lookupProjectValue, readSessionOverrides, readStore, resolveProjectRoot, setProjectValue, setSessionOverride } from './store.js'
+import {
+  clearProjectValues, createCustomPrompt, deleteCustomPrompt,
+  lookupProjectValue, readCustomPrompts, readSessionOverrides, readStore,
+  resolveProjectRoot, retireSessionValues, setProjectValue, setSessionOverride, updateCustomPrompt,
+} from './store.js'
 
 /** Stable Cordis plugin name (matches the bundle patch insert id). */
 export const name = 'mode-mod'
@@ -85,14 +89,25 @@ function json(res, status, body) {
   res.end(JSON.stringify(body))
 }
 
-/** Read a capped JSON request body. */
-function readJsonBody(req) {
+/**
+ * Read a capped JSON request body.
+ * @param req - the incoming request.
+ * @param limit - the maximum accepted byte count.
+ * @returns the parsed body.
+ */
+function readJsonBody(req, limit = 16 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks = []
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > 16 * 1024) { reject(new Error('body too large')); req.destroy(); return }
+      if (size > limit) {
+        const error = new Error('body too large')
+        error.code = 'body-too-large'
+        reject(error)
+        req.destroy()
+        return
+      }
       chunks.push(chunk)
     })
     req.on('end', () => {
@@ -110,9 +125,9 @@ function readJsonBody(req) {
  */
 export function apply(ctx, config = {}) {
   const texts = loadGoalTexts()
-  const goalById = new Map(GOALS.map((goal) => [goal.id, goal]))
+  const builtinById = new Map(GOALS.map((goal) => [goal.id, goal]))
   const rawDefault = config?.defaultGoal
-  const defaultGoal = typeof rawDefault === 'string' && goalById.has(rawDefault) ? rawDefault : undefined
+  const defaultGoal = typeof rawDefault === 'string' && builtinById.has(rawDefault) ? rawDefault : undefined
   if (rawDefault !== undefined && defaultGoal === undefined) {
     ctx.logger.warn('mode-mod: unknown defaultGoal ' + JSON.stringify(rawDefault) + '; global tier stays unset')
   }
@@ -127,14 +142,62 @@ export function apply(ctx, config = {}) {
   let storeSnapshot = { version: 1, projects: {} }
   const refreshStore = async () => { storeSnapshot = await readStore() }
 
+  /** User-authored presets; hydrated at boot and replaced by every mutation. */
+  let customSnapshot = { version: 1, prompts: [] }
+  const customById = (id) => customSnapshot.prompts.find((preset) => preset.id === id)
+  /** Only complete presets are offered in the picker; an empty draft stays in the manager. */
+  const selectableCustom = () => customSnapshot.prompts.filter((preset) => preset.title.trim() !== '' && preset.prompt.trim() !== '')
+
+  /**
+   * Live sessions whose selected preset was deleted: their committed system
+   * prompt keeps rendering the deleted text until the user selects a new
+   * preset for that session. The stored session value is already null.
+   */
+  const retiredPrompts = new Map()
+
+  /**
+   * The exact section text each live session assembled last, so deletion can
+   * freeze the bytes the harness already committed (including the sticky
+   * supersedes header) instead of re-rendering them from scratch.
+   */
+  const lastRendered = new Map()
+
+  /** Read the display name of one goal id, falling back to the raw id. */
+  const goalName = (id) => {
+    if (id === null || id === undefined) return null
+    const builtin = builtinById.get(id)
+    if (builtin !== undefined) return builtin.name
+    const custom = customById(id)
+    if (custom !== undefined) return custom.title || id
+    return id
+  }
+
+  /** Read the system-prompt body of one goal id; '' for none/unknown. */
+  const goalText = (id) => {
+    if (id === null || id === undefined) return ''
+    return texts[id] ?? customById(id)?.prompt ?? ''
+  }
+
+  /** Whether a value names a goal the picker/API may write. */
+  const knownGoal = (id) => builtinById.has(id) || customById(id) !== undefined
+
   /**
    * Boot hydration. A session may start before these reads settle; until they
    * do, the goal is reported but not pinned, so the freeze can never persist a
    * value derived from an empty store.
    */
   let hydrated = false
-  const hydration = Promise.all([readSessionOverrides(), readStore()])
-    .then(([overrides, store]) => { overridesSnapshot = overrides; storeSnapshot = store })
+  const hydration = Promise.all([readSessionOverrides(), readStore(), readCustomPrompts()])
+    .then(([overrides, store, prompts]) => {
+      overridesSnapshot = overrides
+      storeSnapshot = store
+      customSnapshot = prompts
+      // Deleted presets are frozen per session: a resumed session keeps the
+      // prompt text it committed until the user selects another preset.
+      for (const [sessionId, retired] of Object.entries(overrides.retired ?? {})) {
+        retiredPrompts.set(sessionId, retired)
+      }
+    })
     .catch((error) => { ctx.logger.warn('mode-mod: reading plugin data failed: ' + (error?.message ?? error)) })
     .finally(() => { hydrated = true })
   void hydration
@@ -144,6 +207,14 @@ export function apply(ctx, config = {}) {
 
   /** Override writes are read-modify-write of one document: run them one at a time. */
   let writeChain = Promise.resolve()
+
+  /** Custom-preset writes are read-modify-write of one document: run them one at a time. */
+  let promptWriteChain = Promise.resolve()
+  const writePrompts = (fn) => {
+    const run = promptWriteChain.then(fn)
+    promptWriteChain = run.catch(() => {})
+    return run
+  }
   const writeOverride = (sessionId, value) => {
     const write = writeChain.then(async () => {
       try {
@@ -164,7 +235,16 @@ export function apply(ctx, config = {}) {
    * @param value - a stored session value or project default.
    * @returns the goal id, null for none, or undefined when the tier did not choose.
    */
-  const tierGoal = (value) => (value === 'none' ? null : goalById.has(value) ? value : undefined)
+  const tierGoal = (value) => {
+    if (value === 'none') return null
+    if (typeof value !== 'string') return undefined
+    if (knownGoal(value)) return value
+    // A reference to a deleted custom preset means "no preset", never
+    // "inherit the tier below": inheriting would silently swap the prompt of
+    // a session that never asked for another one.
+    if (value.startsWith('custom-')) return null
+    return undefined
+  }
 
   /**
    * Resolve the tiers beneath the session: project default, then the global default.
@@ -256,9 +336,16 @@ export function apply(ctx, config = {}) {
           name: 'mode-mod:goal',
           order: prompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX') + 1,
           text: () => {
+            // A deleted preset keeps rendering its last committed text: the
+            // session value is already null, but rewriting the prompt here
+            // would push a system update the user did not ask for. The stored
+            // text is the exact bytes of the last assembly, header included.
+            const retired = retiredPrompts.get(agent.session.id)
+            if (retired !== undefined) return retired.text
             const goal = goalFor(agent)
-            const rendered = renderGoalSection(goal, texts[goal] ?? '', goalSectionState.get(agent))
+            const rendered = renderGoalSection(goal, goalText(goal), goalSectionState.get(agent))
             goalSectionState.set(agent, rendered.state)
+            lastRendered.set(agent.session.id, rendered.text)
             return rendered.text
           },
         }, 'mode-mod: goal section')
@@ -295,12 +382,12 @@ export function apply(ctx, config = {}) {
 
   // 2. The same-origin API for the browser half.
   ctx.effect(() => {
-    const display = (id) => id === null || id === undefined || id === 'none' ? null : (goalById.get(id)?.name ?? id)
+    const display = (id) => id === null || id === undefined || id === 'none' ? null : goalName(id)
     /**
      * Describe one session's tiers.
      * @param record - its live record, or undefined for a session with no agent.
      * @param sessionId - the session to describe.
-     * @returns the JSON body fields shared by all three routes.
+     * @returns the JSON body fields shared by the state routes.
      */
     const stateOf = async (record, sessionId) => {
       await hydration
@@ -316,6 +403,9 @@ export function apply(ctx, config = {}) {
       // A session the plugin has no record of reads as no goal: without a live
       // agent there is no session value to show and nothing inherited to claim.
       const effective = sessionTier !== undefined ? sessionTier : record === undefined ? null : inheritedGoal(record.cwd)
+      // A deleted preset is no longer a selection: the session's stored value
+      // is null while its already-committed prompt keeps rendering (retired).
+      const retired = retiredPrompts.get(sessionId)
       return {
         known: record !== undefined,
         projectRoot: root,
@@ -323,13 +413,20 @@ export function apply(ctx, config = {}) {
         projectValueName: display(projectValue ?? null),
         sessionValue,
         sessionValueName: display(sessionValue),
-        effectiveGoal: effective,
-        effectiveGoalName: display(effective),
+        effectiveGoal: retired === undefined ? effective : null,
+        effectiveGoalName: retired === undefined ? display(effective) : null,
+        retiredGoal: retired === undefined ? null : { id: retired.id, name: retired.title || retired.id },
+        retiredGoalName: retired === undefined ? null : (retired.title || retired.id),
         globalValue: defaultGoal ?? null,
         globalValueName: display(defaultGoal ?? null),
       }
     }
     const goalsPayload = () => GOALS.map((goal) => ({ id: goal.id, name: goal.name, description: goal.description }))
+      .concat(selectableCustom().map((preset) => ({ id: preset.id, name: preset.title, description: preset.description })))
+    const promptsPayload = () => ({
+      builtins: GOALS.map((goal) => ({ id: goal.id, title: goal.name, description: goal.description, prompt: texts[goal.id] })),
+      custom: customSnapshot.prompts.map((preset) => ({ ...preset })),
+    })
     const stateRoute = {
       method: 'GET',
       path: '/api/mode-mod/state',
@@ -353,12 +450,15 @@ export function apply(ctx, config = {}) {
         // A closed session has no live agent but keeps a stored value the
         // picker may show and change; only a malformed id is rejected.
         if (record === undefined && !SESSION_ID_PATTERN.test(sessionId)) { json(res, 404, { error: 'unknown session' }); return }
-        if (body.value !== null && body.value !== 'none' && !goalById.has(body.value)) {
+        if (body.value !== null && body.value !== 'none' && !knownGoal(body.value)) {
           json(res, 400, { error: 'unknown goal', value: body.value ?? null })
           return
         }
         try {
           await writeOverride(sessionId, body.value ?? null)
+          // An explicit pick is the one action that may replace a deleted
+          // preset's frozen text.
+          retiredPrompts.delete(sessionId)
           ctx.logger.info('mode-mod: session ' + sessionId + ' goal -> ' + (body.value ?? 'unselected'))
           json(res, 200, { sessionId, ...(await stateOf(record, sessionId)), goals: goalsPayload() })
         } catch (error) {
@@ -376,7 +476,7 @@ export function apply(ctx, config = {}) {
         const sessionId = typeof body.session === 'string' ? body.session : ''
         const record = sessions.get(sessionId)
         if (record === undefined || record.cwd === undefined) { json(res, 404, { error: 'unknown session' }); return }
-        if (body.value !== null && body.value !== 'none' && !goalById.has(body.value)) {
+        if (body.value !== null && body.value !== 'none' && !knownGoal(body.value)) {
           json(res, 400, { error: 'unknown goal', value: body.value ?? null })
           return
         }
@@ -391,7 +491,105 @@ export function apply(ctx, config = {}) {
         }
       },
     }
-    const disposers = [ctx.webServer.register(stateRoute), ctx.webServer.register(goalRoute), ctx.webServer.register(projectRoute)]
+    const promptsRoute = {
+      method: 'GET',
+      path: '/api/mode-mod/prompts',
+      handler: async (req, res) => {
+        if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
+        await hydration
+        json(res, 200, promptsPayload())
+      },
+    }
+    /* Create/update/delete one user-authored system-prompt preset. Built-in
+     * goals are shipped files and are rejected here, so the settings page can
+     * only ever write the custom document. */
+    const promptRoute = {
+      method: 'POST',
+      path: '/api/mode-mod/prompt',
+      handler: async (req, res) => {
+        if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
+        let body
+        try { body = await readJsonBody(req, 256 * 1024) } catch (error) {
+          json(res, error?.code === 'body-too-large' ? 413 : 400, { error: 'invalid body' })
+          return
+        }
+        const action = body?.action
+        const id = typeof body?.id === 'string' ? body.id : ''
+        if (builtinById.has(id)) { json(res, 400, { error: 'built-in presets are read-only' }); return }
+        try {
+          if (action === 'create') {
+            const { doc, entry } = await writePrompts(() => createCustomPrompt(body.preset ?? {}))
+            customSnapshot = doc
+            ctx.logger.info('mode-mod: created custom preset ' + entry.id)
+            json(res, 200, { ...promptsPayload(), createdId: entry.id })
+            return
+          }
+          if (action === 'update') {
+            if (id === '') { json(res, 400, { error: 'missing preset id' }); return }
+            const { doc, entry } = await writePrompts(() => updateCustomPrompt(id, body.preset ?? {}))
+            customSnapshot = doc
+            ctx.logger.info('mode-mod: updated custom preset ' + entry.id)
+            json(res, 200, { ...promptsPayload(), updatedId: entry.id })
+            return
+          }
+          if (action === 'delete') {
+            if (id === '') { json(res, 400, { error: 'missing preset id' }); return }
+            const outcome = await writePrompts(async () => {
+              // Settle pending session writes first: the delete must see the
+              // values those writes pin, and must clear them afterwards.
+              await writeChain
+              await refreshStore()
+              const target = customById(id)
+              if (target === undefined) return { missing: true }
+              // Every stored selection of the preset — live or closed — is
+              // retired. A live session that inherited it without a stored
+              // value is retired in memory as well.
+              const retireIds = new Set()
+              for (const [sessionId, value] of Object.entries(overridesSnapshot.sessions)) {
+                if (value === id) retireIds.add(sessionId)
+              }
+              for (const [sessionId, record] of sessions) {
+                const own = tierGoal(overridesSnapshot.sessions[sessionId])
+                const effective = own !== undefined ? own : inheritedGoal(record.cwd)
+                if (effective === id) retireIds.add(sessionId)
+              }
+              // Freeze the text the session already committed. The stored
+              // session value becomes null, the section keeps rendering these
+              // bytes until an explicit pick replaces them. A live session
+              // reuses its last assembly verbatim; a closed one falls back to
+              // the preset body.
+              for (const sessionId of retireIds) {
+                retiredPrompts.set(sessionId, {
+                  id,
+                  title: target.title,
+                  text: lastRendered.get(sessionId) ?? target.prompt,
+                })
+              }
+              const { doc } = await deleteCustomPrompt(id)
+              const records = new Map([...retireIds].map((sessionId) => [sessionId, retiredPrompts.get(sessionId)]))
+              // The retirement is a read-modify-write of the session document:
+              // append it to the same chain as goal writes, never beside it.
+              const retireWrite = writeChain.then(() => retireSessionValues(records))
+              writeChain = retireWrite.catch(() => {})
+              const overrides = await retireWrite
+              return { doc, overrides }
+            })
+            if (outcome.missing === true) { json(res, 404, { error: 'unknown custom preset' }); return }
+            customSnapshot = outcome.doc
+            overridesSnapshot = outcome.overrides
+            storeSnapshot = await clearProjectValues(id)
+            ctx.logger.info('mode-mod: deleted custom preset ' + id)
+            json(res, 200, { ...promptsPayload(), deletedId: id })
+            return
+          }
+          json(res, 400, { error: 'unknown action' })
+        } catch (error) {
+          const status = error?.code === 'validation' ? 400 : error?.code === 'not-found' ? 404 : 500
+          json(res, status, { error: error?.message ?? String(error) })
+        }
+      },
+    }
+    const disposers = [ctx.webServer.register(stateRoute), ctx.webServer.register(goalRoute), ctx.webServer.register(projectRoute), ctx.webServer.register(promptsRoute), ctx.webServer.register(promptRoute)]
     return () => { for (const dispose of disposers) dispose?.() }
   }, 'mode-mod: routes')
 }

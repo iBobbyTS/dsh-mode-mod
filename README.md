@@ -95,13 +95,40 @@ as a separate, independently selectable dimension. Evolves
    Served by
    `GET /api/mode-mod/state`, `POST /api/mode-mod/goal`, and
    `POST /api/mode-mod/project` (loopback + same-origin only).
-4. **run_code guidance, host-injected** (`src/guidance.js`) — one
+4. **System prompt management (Settings → 系统提示词管理)** — a settings
+   section that lists the built-in presets (read-only) and lets you add,
+   edit, and delete your own. Each custom preset carries a one-line
+   **Title**, a one-line **Description**, and a multi-line **System
+   Prompt**; edits auto-save after a short debounce (plus on blur and when
+   the section unmounts), so there is no Save button. Built-in goals are
+   shipped files and the API rejects updates/deletes for them. A custom
+   preset appears in the session picker only once both its title and
+   system prompt are non-empty; an empty row stays in the manager as a
+   draft (badge 草稿). Custom presets live in
+   `$DSH_HOME/plugin/data/mode-mod/custom-system-prompts.json`
+   (atomic writes, ids `custom-<12 hex>`), and are served by
+   `GET /api/mode-mod/prompts` / `POST /api/mode-mod/prompt`.
+
+   **Deleting a custom preset** removes it from the picker, rewrites every
+   session value and project default that referenced it to **null** (the
+   entry is deleted, never turned into the explicit `"none"` sentinel),
+   and freezes the prompt of every session with a stored selection of it:
+   a live session keeps the exact section text it last assembled
+   (supersedes header included), a closed session keeps the preset body,
+   and both are recorded under `retired` in the session document. A
+   restart therefore re-renders the same bytes instead of committing a new
+   system prompt. Only an explicit preset pick for that session clears the
+   record and applies the new text. A live session that merely inherited
+   the deleted preset (no stored value) is frozen in memory as well; a
+   closed session known only through the project default is not
+   enumerable, so clearing that default is all the plugin can do.
+5. **run_code guidance, host-injected** (`src/guidance.js`) — one
    system-prompt section after the tools SDK bindings reminding the model
    that `run_code`'s own `description` argument is required and nested
    tool-call descriptions do not satisfy it. Injected on every agent —
    subagents included — whose live composition presents PTC (presets
    `ptc` and `cordis`).
-5. **Creator mode** — the former `dsh-creator-source-context` override of
+6. **Creator mode** — the former `dsh-creator-source-context` override of
    `preset-cordis`: the source-reference persona suffix and PTC tool
    presentation. Keep every other row identical to
    `packages/bundle/web-app/presets/cordis.patch.yml` in the matching
@@ -126,7 +153,14 @@ as a separate, independently selectable dimension. Evolves
   the PTC guidance when that mode presents PTC).
 - A stored project value naming an unknown goal id is ignored (falls through
   to the global default); store writes are atomic (tmp + rename) and a
-  malformed store reads as empty.
+  malformed store reads as empty. A value naming a deleted `custom-*` id
+  resolves to null instead, so it can never inherit a different prompt.
+- Deleting a custom preset never edits session history: sessions that had
+  it selected (live or closed, value or inherited) keep the exact section
+  text they committed, recorded in `session-goal-overrides.json` under
+  `retired`, until the user selects another preset for that session. A
+  prompt preset edited in place is not a new selection; its updated text
+  reaches a session on its next assembly.
 - The mode-tier default (`agent-preset-registry.default`) and the goal-tier
   default are configured independently; pointing `selectedDefault` at a goal
   id no longer works — goals are not presets.

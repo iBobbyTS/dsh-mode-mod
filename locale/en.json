@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Mode Mod",
-    "description": "Development-goal presets (research/prototype/utility/host-extension/library/software/agent-runtime) with global/project/session defaults, run_code description guidance, and the Creator-mode source context."
+    "description": "Development-goal presets (built-in research/prototype/utility/host-extension/library/software/agent-runtime plus user-authored custom prompts managed in Settings) with global/project/session defaults, run_code description guidance, and the Creator-mode source context."
   }
 }
