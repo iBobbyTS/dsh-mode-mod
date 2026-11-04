@@ -26,10 +26,14 @@ as a separate, independently selectable dimension. Evolves
    `prototype`). A goal change takes effect on the next model turn.
 3. **New-session-row GUI** — occupies `conversation.hero.options` and
    neutralizes the host's right-edge seating (`margin-left: auto` on the
-   slot wrapper), so the goal `<select>` (none + seven goals) sits
-   left-aligned directly beside the mode picker and writes the session
-   tier; right-clicking the select
-   opens the project-default menu (set current goal / clear). Served by
+   slot wrapper), so the goal dropdown sits left-aligned directly beside
+   the mode picker. The trigger and list are the host's own idiom — `Menu`
+   and icons required from the `dsh-client-ui-primitives` baseline row,
+   with the seat-button geometry of the official agent-preset chip — not a
+   native `<select>`; rows carry the goal name over its description and a
+   check on the effective goal, and selecting one writes the session tier.
+   Right-clicking the trigger opens the project-default menu (set current
+   goal / clear). Served by
    `GET /api/mode-mod/state`, `POST /api/mode-mod/goal`, and
    `POST /api/mode-mod/project` (loopback + same-origin only).
 4. **run_code guidance, host-injected** (`src/guidance.js`) — one
