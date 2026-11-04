@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "模式定制",
+    "description": "按开发目标划分的预设(research/prototype/utility/host-extension/library/software/agent-runtime),支持全局/项目/会话三级默认,附 run_code description 提示与创造模式源码上下文。"
+  }
+}

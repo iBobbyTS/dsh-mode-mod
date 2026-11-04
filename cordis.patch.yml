@@ -1,0 +1,17 @@
+# dsh-mode-mod bundle patch, layer 1 of 2: the plugin row itself.
+#
+# The host half (src/index.js) injects the seven development-goal
+# system-prompt texts as one scoped prompt section per top-level agent
+# (session > project > global tier resolution; global tier = defaultGoal
+# below), injects the run_code guidance on PTC-presenting agents, and serves
+# the /api/mode-mod/* routes; the browser half (./client) seats the goal
+# picker and project-default action beside the preset (mode) picker. The
+# Creator-mode preset-cordis override lives in the second layer,
+# presets/creator-cordis.patch.yml — each overlay file must be a single YAML
+# document (a multi-document stream fails to parse and the whole bundle is
+# skipped).
+- insert:
+    - id: mode-mod
+      name: '@local/dsh-mode-mod'
+      config:
+        defaultGoal: prototype

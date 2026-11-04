@@ -1,0 +1,52 @@
+{
+  "name": "@local/dsh-mode-mod",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "System-prompt-preset (development-goal) dimension layered on any mode, with three-tier defaults, host-injected run_code guidance, and the Creator-mode source context.",
+  "icon": "./icon.svg",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./guidance": "./src/guidance.js",
+    "./client": "./src/client.js",
+    "./prompts/*": "./prompts/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "src",
+    "prompts",
+    "presets",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/creator-cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=0.2.0-alpha.1",
+    "react": "^18.2.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "react": "^18.2.0"
+  }
+}
