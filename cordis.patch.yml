@@ -17,11 +17,13 @@
       config:
         defaultGoal: prototype
 
-# run_code (PTC) default timeout: 360s instead of the shipped 120s. The base
+# run_code (PTC) default and maximum timeout: one day. The base
 # bundle carries the ptc-runtime row with no config; this id-targeted override
 # supplies config wholesale (never deep-merged), and the runtime's Config
-# schema defaults fill maxTimeoutMs (600s) and the remaining fields.
+# schema defaults fill the remaining fields. Both default and maximum are one day;
+# nested tool deadlines remain independent.
 - id: ptc-runtime
   name: '@deepseek-ai/dsh-ptc-runtime-node'
   config:
-    timeoutMs: 360000
+    timeoutMs: 86400000
+    maxTimeoutMs: 86400000

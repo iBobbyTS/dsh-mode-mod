@@ -164,3 +164,5 @@ as a separate, independently selectable dimension. Evolves
 - The mode-tier default (`agent-preset-registry.default`) and the goal-tier
   default are configured independently; pointing `selectedDefault` at a goal
   id no longer works — goals are not presets.
+
+PTC 的默认预算为 1 天，允许的最大 timeoutMs 为 1 天；配置权威在 cordis.patch.yml 的 ptc-runtime override。组合调用应显式给足外层等待预算，内层工具仍按自己的 timeout 执行。Desktop 使用 link 时，运行中的宿主仍需重载才能采用新配置。
