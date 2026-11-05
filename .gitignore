@@ -1,2 +1,8 @@
 # OS Junk
 *.DS_Store
+
+# node
+node_modules/
+
+# Build
+.build/
