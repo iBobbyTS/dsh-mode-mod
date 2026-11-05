@@ -1,4 +1,5 @@
-# dsh-mode-mod bundle patch, layer 1 of 2: the plugin row itself.
+# dsh-mode-mod bundle patch, layer 1 of 2: the plugin row itself, plus an
+# id-targeted ptc-runtime config override.
 #
 # The host half (src/index.js) injects the seven development-goal
 # system-prompt texts as one scoped prompt section per top-level agent
@@ -15,3 +16,12 @@
       name: '@local/dsh-mode-mod'
       config:
         defaultGoal: prototype
+
+# run_code (PTC) default timeout: 360s instead of the shipped 120s. The base
+# bundle carries the ptc-runtime row with no config; this id-targeted override
+# supplies config wholesale (never deep-merged), and the runtime's Config
+# schema defaults fill maxTimeoutMs (600s) and the remaining fields.
+- id: ptc-runtime
+  name: '@deepseek-ai/dsh-ptc-runtime-node'
+  config:
+    timeoutMs: 360000
