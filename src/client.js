@@ -89,8 +89,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		const ZH = (typeof navigator !== "undefined" && String(navigator.language || "").toLowerCase().startsWith("zh"));
-		const L = ZH ? {
+		const LABELS_ZH = {
 			goal: "系统提示词预设",
 			none: "无预设",
 			noneDesc: "不向系统提示词叠加目标文本",
@@ -114,7 +113,6 @@ window.__ModuleLoader__.load({
 			newTitle: "新的系统提示词",
 			emptySelection: "从左侧选择一个预设，或新增一个。",
 			noCustom: "还没有自定义预设。",
-			readOnlyHint: "内置预设随插件发布，不能修改或删除。",
 			titleLabel: "标题",
 			titlePlaceholder: "例如：数据管道审查",
 			descriptionLabel: "描述",
@@ -135,7 +133,9 @@ window.__ModuleLoader__.load({
 			cancel: "取消",
 			deleteNotice: "预设已删除。已经使用它的会话会保留当前系统提示词，直到你为会话选择新的预设。",
 			deletedSuffix: "（已删除）",
-		} : {
+		};
+
+		const LABELS_EN = {
 			goal: "System-prompt preset",
 			none: "None",
 			noneDesc: "Layer no goal text onto the system prompt",
@@ -159,7 +159,6 @@ window.__ModuleLoader__.load({
 			newTitle: "New system prompt",
 			emptySelection: "Select a preset on the left, or add one.",
 			noCustom: "No custom presets yet.",
-			readOnlyHint: "Built-in presets ship with the plugin and cannot be changed or deleted.",
 			titleLabel: "Title",
 			titlePlaceholder: "e.g. Data pipeline review",
 			descriptionLabel: "Description",
@@ -182,6 +181,59 @@ window.__ModuleLoader__.load({
 			deletedSuffix: " (deleted)",
 		};
 
+		/* The host app keeps <html lang> pointed at the active locale
+		 * (zh-CN / en), so prefer it over navigator.language: the labels
+		 * must follow the app's Language setting, not the OS browser. */
+		function labelsFromEnvironment() {
+			const source = (typeof document !== "undefined" && document.documentElement && document.documentElement.lang)
+				|| (typeof navigator !== "undefined" && navigator.language)
+				|| "";
+			return String(source).toLowerCase().startsWith("zh") ? LABELS_ZH : LABELS_EN;
+		}
+
+		let cachedLabels = null;
+		let labelVersion = 0;
+		const labelListeners = new Set();
+
+		function activeLabels() {
+			return cachedLabels || (cachedLabels = labelsFromEnvironment());
+		}
+
+		function refreshLabels() {
+			const next = labelsFromEnvironment();
+			if (next === cachedLabels) return;
+			cachedLabels = next;
+			labelVersion += 1;
+			for (const notify of labelListeners) notify();
+		}
+
+		function chineseLabelsActive() {
+			return activeLabels() === LABELS_ZH;
+		}
+
+		/* Live dictionary view: every read resolves against the current app
+		 * language, so non-React call sites (slot labels, injected faces)
+		 * stay correct after a language switch. */
+		const L = new Proxy({}, { get: (_target, key) => activeLabels()[key] });
+
+		function subscribeLabels(notify) {
+			labelListeners.add(notify);
+			return () => { labelListeners.delete(notify); };
+		}
+
+		function labelVersionSnapshot() {
+			return labelVersion;
+		}
+
+		/* Re-render hook for components that read L. */
+		function useLabels() {
+			return React.useSyncExternalStore(subscribeLabels, labelVersionSnapshot, labelVersionSnapshot);
+		}
+
+		if (typeof document !== "undefined" && typeof MutationObserver !== "undefined" && document.documentElement) {
+			new MutationObserver(refreshLabels).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+		}
+
 		/* Menu-row descriptions localized client-side; the server payload carries
 		 * the English descriptions from src/presets.js. */
 		const ZH_GOAL_DESCRIPTIONS = {
@@ -195,7 +247,7 @@ window.__ModuleLoader__.load({
 		};
 
 		function goalDescription(id, fallback) {
-			return (ZH && ZH_GOAL_DESCRIPTIONS[id]) || fallback;
+			return (chineseLabelsActive() && ZH_GOAL_DESCRIPTIONS[id]) || fallback;
 		}
 
 		/* The host seats .heroOptions at the row's right edge via
@@ -262,6 +314,7 @@ window.__ModuleLoader__.load({
 		const NONE_ID = "__none__";
 
 		function ModeModGoalPicker({ sessionId, modeMod, seat }) {
+			useLabels();
 			// "header" is the in-session seat beside the mode chip: a switch only.
 			const headerSeat = seat === "header";
 			const [state, setState] = useState(null);
@@ -492,6 +545,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function PromptListRow({ entry, selected, onSelect }) {
+			useLabels();
 			const [hover, setHover] = useState(false);
 			const draft = entry.kind === "custom" && (!entry.title.trim() || !entry.prompt.trim());
 			const description = entry.kind === "builtin" ? goalDescription(entry.id, entry.description) : entry.description;
@@ -540,7 +594,7 @@ window.__ModuleLoader__.load({
 				onChange: onChange ? (event) => onChange(event.target.value) : undefined,
 				style,
 			};
-			return React.createElement("label", { style: managerStyles.field },
+			return React.createElement("label", { style: fieldStyle },
 				React.createElement("span", { style: managerStyles.label }, label),
 				multiline
 					? React.createElement("textarea", common)
@@ -548,11 +602,11 @@ window.__ModuleLoader__.load({
 		}
 
 		function BuiltinPresetView({ preset }) {
+			useLabels();
 			return React.createElement("div", { style: managerStyles.preset },
 				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 } },
 					React.createElement("span", { style: { fontSize: "14px", lineHeight: "22px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, preset.title),
 					React.createElement("span", { style: managerStyles.badge }, L.builtinBadge)),
-				React.createElement("div", { style: managerStyles.hint }, L.readOnlyHint),
 				React.createElement(PromptTextField, { label: L.titleLabel, value: preset.title, readOnly: true }),
 				React.createElement(PromptTextField, { label: L.descriptionLabel, value: goalDescription(preset.id, preset.description), readOnly: true }),
 				React.createElement(PromptTextField, { label: L.promptLabel, value: preset.prompt, readOnly: true, multiline: true, fill: true }));
@@ -562,6 +616,7 @@ window.__ModuleLoader__.load({
 		 * chain keeps requests in order, the unmount flush is keepalive so a
 		 * switch between list rows never loses the last keystrokes. */
 		function CustomPresetEditor({ preset, onLocalChange, onDeleted }) {
+			useLabels();
 			const [draft, setDraft] = useState({ title: preset.title, description: preset.description, prompt: preset.prompt });
 			const [status, setStatus] = useState("saved");
 			const [message, setMessage] = useState("");
@@ -654,6 +709,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function PromptManagerSection() {
+			useLabels();
 			const [data, setData] = useState(null);
 			const [selectedKey, setSelectedKey] = useState(null);
 			const [loading, setLoading] = useState(true);
