@@ -1,7 +1,7 @@
 # dsh-mode-mod bundle patch, layer 1 of 2: the plugin row itself, plus an
 # id-targeted ptc-runtime config override.
 #
-# The host half (src/index.js) injects the seven development-goal
+# The host half (src/index.ts) injects the seven development-goal
 # system-prompt texts as one scoped prompt section per top-level agent
 # (session > project > global tier resolution; global tier = defaultGoal
 # below), injects the run_code guidance on PTC-presenting agents, and serves

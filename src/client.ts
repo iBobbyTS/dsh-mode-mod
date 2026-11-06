@@ -1,69 +1,42 @@
-/* Browser half of dsh-mode-mod. Seats the system-prompt-preset (goal)
- * dropdown twice, both times right after the shipped agent-preset (mode)
- * control:
- *   - conversation.hero.options, the New Session row, with the project-star
- *     affordance on every row;
- *   - conversation.session.header.actions at order 0 (the mode chip itself
- *     sits at -10), so a running Session can switch preset mid-conversation
- *     from the header, beside the mode chip. The header seat carries no star:
- *     there the dropdown is a switch, not the project-default editor.
- * Writes the SESSION tier through POST /api/mode-mod/goal. The dropdown is
- * the host's own idiom — Menu plus icons from dsh-client-ui-primitives (a
- * PLATFORM_MODULES baseline row every dynamic bundle may require) — with the
- * hero trigger styled like the official agent-preset seat button and the
- * header trigger like the header's agent-preset label; no native <select>.
- * "None" is a real peer
- * option whose value is the string "none" — an explicit choice that
- * injects no goal text — while null means not selected (inherit). The
- * PROJECT tier is a star on each row's right edge: click ☆ to make that
- * row the project default (★, at most one; the none row's star sets a
- * project-level "none" that blocks the global tier), click ★ to unselect.
- * A star click writes only the project tier — the session's own choice
- * stays untouched — and stops the click so the menu does not collapse. The
- * GLOBAL tier lives in the plugin's bundle config. The mode
- * dimension stays with the shipped preset picker. Wrapped in an IIFE so
- * nothing leaks into the page. */
-(function () {
-window.__ModuleLoader__.load({
-	id: "@local/dsh-mode-mod",
-	factory: (require) => {
-		var module = { exports: {} };
-		var exports = module.exports;
-		const React = require("react");
-		const { useEffect, useRef, useState } = React;
-		const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = require("@deepseek-ai/dsh-client-ui-primitives");
+import * as React from 'react';
+import type { GoalState, PromptFields, PromptEntry, PromptPayload } from './protocol.js';
+import type { ClientContext, PickerProps } from './client-contract.js';
+import { primitives } from './client-contract.js';
+import { errorDetails } from './errors.js';
+const { useEffect, useRef, useState } = React;
+const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitives;
 
 		const API = {
-			state: (sessionId) => "/api/mode-mod/state?session=" + encodeURIComponent(sessionId),
+			state: (sessionId: string) => "/api/mode-mod/state?session=" + encodeURIComponent(sessionId),
 			goal: "/api/mode-mod/goal",
 			project: "/api/mode-mod/project",
 			prompts: "/api/mode-mod/prompts",
 			prompt: "/api/mode-mod/prompt",
 		};
 
-		function resolveApiUrl(path) {
+		function resolveApiUrl(path: string) {
 			if (typeof document === "undefined") return path;
 			try { return new URL(path.replace(/^\//, ""), document.baseURI).href; } catch { return path; }
 		}
 
-		async function fetchJson(url, init) {
+		async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 			const response = await fetch(resolveApiUrl(url), init);
-			let body = null;
+			let body: { error?: string } | null = null;
 			try { body = await response.json(); } catch {}
 			if (!response.ok) {
-				const error = new Error((body && body.error) || ("HTTP " + response.status));
+				const error = new Error((body && body.error) || ("HTTP " + response.status)) as Error & { status: number };
 				error.status = response.status;
 				throw error;
 			}
-			return body;
+			return body as T;
 		}
 
-		function loadState(sessionId) {
-			return fetchJson(API.state(sessionId));
+		function loadState(sessionId: string) {
+			return fetchJson<GoalState>(API.state(sessionId));
 		}
 
-		function post(path, sessionId, value) {
-			return fetchJson(path, {
+		function post(path: string, sessionId: string, value: string | null) {
+			return fetchJson<GoalState>(path, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ session: sessionId, value }),
@@ -71,14 +44,14 @@ window.__ModuleLoader__.load({
 		}
 
 		function listPrompts() {
-			return fetchJson(API.prompts);
+			return fetchJson<PromptPayload>(API.prompts);
 		}
 
-		function postPrompts(body, keepalive) {
+		function postPrompts(body: { action: string; id?: string; preset?: Partial<PromptFields> }, keepalive?: boolean) {
 			const payload = JSON.stringify(body);
 			let bytes = payload.length;
 			try { bytes = new TextEncoder().encode(payload).length; } catch {}
-			return fetchJson(API.prompt, {
+			return fetchJson<PromptPayload>(API.prompt, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: payload,
@@ -191,9 +164,9 @@ window.__ModuleLoader__.load({
 			return String(source).toLowerCase().startsWith("zh") ? LABELS_ZH : LABELS_EN;
 		}
 
-		let cachedLabels = null;
+		let cachedLabels: typeof LABELS_EN | null = null;
 		let labelVersion = 0;
-		const labelListeners = new Set();
+		const labelListeners = new Set<() => void>();
 
 		function activeLabels() {
 			return cachedLabels || (cachedLabels = labelsFromEnvironment());
@@ -214,9 +187,9 @@ window.__ModuleLoader__.load({
 		/* Live dictionary view: every read resolves against the current app
 		 * language, so non-React call sites (slot labels, injected faces)
 		 * stay correct after a language switch. */
-		const L = new Proxy({}, { get: (_target, key) => activeLabels()[key] });
+		const L = new Proxy({} as typeof LABELS_EN, { get: (_target, key) => activeLabels()[key as keyof typeof LABELS_EN] });
 
-		function subscribeLabels(notify) {
+		function subscribeLabels(notify: () => void) {
 			labelListeners.add(notify);
 			return () => { labelListeners.delete(notify); };
 		}
@@ -235,8 +208,8 @@ window.__ModuleLoader__.load({
 		}
 
 		/* Menu-row descriptions localized client-side; the server payload carries
-		 * the English descriptions from src/presets.js. */
-		const ZH_GOAL_DESCRIPTIONS = {
+		 * the English descriptions from src/presets.ts. */
+		const ZH_GOAL_DESCRIPTIONS: Record<string, string> = {
 			research: "科学研究与算法实验。",
 			prototype: "快速原型与可行性验证。",
 			utility: "小型脚本与个人工具。",
@@ -246,7 +219,7 @@ window.__ModuleLoader__.load({
 			"agent-runtime": "代理运行时行为调整。",
 		};
 
-		function goalDescription(id, fallback) {
+		function goalDescription(id: string, fallback: string) {
 			return (chineseLabelsActive() && ZH_GOAL_DESCRIPTIONS[id]) || fallback;
 		}
 
@@ -258,7 +231,7 @@ window.__ModuleLoader__.load({
 		 * used pixel value in getComputedStyle, so recognize the div by its
 		 * CSS-module class substring (hash prefix varies); the auto check is a
 		 * fallback for engines that report it literally. */
-		function alignBesideModeControl(node) {
+		function alignBesideModeControl(node: HTMLElement | null) {
 			if (!node) return;
 			let el = node.parentElement;
 			for (let depth = 0; el && depth < 4; depth++, el = el.parentElement) {
@@ -272,7 +245,7 @@ window.__ModuleLoader__.load({
 
 		/* A stored session value ("none" or a goal id) is the session's real
 		 * choice; null means not selected — the readout inherits from below. */
-		function tierName(state) {
+		function tierName(state: GoalState) {
 			// A deleted preset is no longer a selection (the stored value is
 			// null), but the session keeps rendering its text until a new pick.
 			if (state.retiredGoalName) return state.retiredGoalName + L.deletedSuffix;
@@ -286,7 +259,7 @@ window.__ModuleLoader__.load({
 		 * small inline SVG (currentColor, 14px — the size of the Menu's
 		 * trailing check). Outline for ☆, filled for ★. */
 		const STAR_PATH = "M8 1.7l1.85 3.74 4.12.6-2.99 2.91.71 4.11L8 11.08l-3.69 1.98.71-4.11-2.99-2.91 4.12-.6z";
-		function StarIcon({ filled }) {
+		function StarIcon({ filled }: { filled: boolean }) {
 			return React.createElement("svg", {
 				width: "14", height: "14", viewBox: "0 0 16 16", "aria-hidden": true,
 				fill: filled ? "currentColor" : "none",
@@ -301,7 +274,7 @@ window.__ModuleLoader__.load({
 		 * right edge, and every row reserves the 20px the Menu's trailing
 		 * selection check occupies (6px gap + 14px glyph) so stars line up in
 		 * one column on checked and unchecked rows alike. */
-		function menuRow(name, description, star) {
+		function menuRow(name: React.ReactNode, description: React.ReactNode, star: React.ReactNode) {
 			return React.createElement("span", {
 				style: { display: "flex", alignItems: "center", gap: "8px", width: "100%", minWidth: 0 },
 			},
@@ -313,16 +286,16 @@ window.__ModuleLoader__.load({
 
 		const NONE_ID = "__none__";
 
-		function ModeModGoalPicker({ sessionId, modeMod, seat }) {
+		function ModeModGoalPicker({ sessionId, modeMod, seat }: PickerProps) {
 			useLabels();
 			// "header" is the in-session seat beside the mode chip: a switch only.
 			const headerSeat = seat === "header";
-			const [state, setState] = useState(null);
+			const [state, setState] = useState<GoalState | null>(null);
 			const [busy, setBusy] = useState(false);
 			const [goalOpen, setGoalOpen] = useState(false);
 			const [hover, setHover] = useState(false);
-			const [starHover, setStarHover] = useState(undefined);
-			const buttonRef = useRef(null);
+			const [starHover, setStarHover] = useState<string | undefined>(undefined);
+			const buttonRef = useRef<HTMLButtonElement | null>(null);
 			// Re-read on open: the preset list can change in Settings while this
 			// picker is mounted, and a focus event is not guaranteed.
 			const reloadRef = useRef(() => {});
@@ -366,12 +339,12 @@ window.__ModuleLoader__.load({
 			// loses its preset control.
 			if (state === null) return null;
 
-			const pick = async (value) => {
+			const pick = async (value: string | null) => {
 				if (busy) return;
 				setBusy(true);
 				try { setState(await modeMod.goal(sessionId, value)); } catch {} finally { setBusy(false); }
 			};
-			const runProject = async (value) => {
+			const runProject = async (value: string | null) => {
 				if (busy) return;
 				setBusy(true);
 				try { setState(await modeMod.project(sessionId, value)); } catch {} finally { setBusy(false); }
@@ -390,7 +363,7 @@ window.__ModuleLoader__.load({
 			 * sits beside): 22px tall, 12px text, fill-tsp-secondary at rest.
 			 * Hover and open fill need a state because inline styles cannot
 			 * express :hover / [aria-expanded]. */
-			const triggerStyle = headerSeat ? {
+			const triggerStyle: React.CSSProperties = headerSeat ? {
 				display: "inline-flex", alignItems: "center", gap: "4px",
 				height: "22px", padding: "0 4px 0 2px", border: "none",
 				borderRadius: "var(--dsw-radius-xs)",
@@ -414,7 +387,7 @@ window.__ModuleLoader__.load({
 
 			const trigger = React.createElement("button", {
 				type: "button",
-				ref: (node) => {
+				ref: (node: HTMLButtonElement | null) => {
 					buttonRef.current = node;
 					if (!headerSeat) alignBesideModeControl(node);
 				},
@@ -445,11 +418,11 @@ window.__ModuleLoader__.load({
 			 * click stops propagation so the row's selection handler never
 			 * fires: the session tier is untouched and the menu stays open. */
 			const goalIds = new Set((state.goals ?? []).map((goal) => goal.id));
-			const starredValue = state.projectValue !== null && (state.projectValue === "none" || goalIds.has(state.projectValue)) ? state.projectValue : null;
+			const starredValue = state.projectValue !== null && (state.projectValue === "none" || goalIds.has(state.projectValue!)) ? state.projectValue : null;
 			/* isSelected: this row carries the Menu's trailing check (6px gap +
 			 * 14px glyph), which narrows its label box; the extra margin keeps
 			 * every star in the same right-aligned column either way. */
-			const starFor = (value, isSelected) => {
+			const starFor = (value: string, isSelected: boolean) => {
 				// The header seat switches the session preset only; the project
 				// default stays with the New Session dropdown.
 				if (headerSeat) return null;
@@ -459,7 +432,7 @@ window.__ModuleLoader__.load({
 					title: starred ? L.clearStar : L.setStar,
 					onMouseEnter: () => setStarHover(value),
 					onMouseLeave: () => setStarHover((current) => current === value ? undefined : current),
-					onClick: (event) => {
+					onClick: (event: React.MouseEvent) => {
 						event.stopPropagation();
 						event.preventDefault();
 						if (busy) return;
@@ -507,7 +480,7 @@ window.__ModuleLoader__.load({
 
 		const PROMPT_LIMITS = { title: 80, description: 200, prompt: 64 * 1024 };
 
-		const managerStyles = {
+		const managerStyles: Record<string, React.CSSProperties> = {
 			page: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0, maxWidth: "760px", height: "100%", minHeight: 0, boxSizing: "border-box", color: "var(--dsw-alias-label-primary, #0f1115)" },
 			header: { display: "flex", flexDirection: "column", gap: "12px", flexShrink: 0 },
 			title: { margin: 0, fontSize: "18px", fontWeight: 600 },
@@ -533,18 +506,18 @@ window.__ModuleLoader__.load({
 			danger: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "4px", height: "32px", padding: "0 12px", border: "1px solid transparent", borderRadius: "8px", background: "transparent", color: "var(--dsw-alias-state-error-primary, #ec1313)", font: "inherit", fontSize: "13px", cursor: "pointer" },
 		};
 
-		function promptKey(entry) {
+		function promptKey(entry: PromptEntry) {
 			return entry.kind + ":" + entry.id;
 		}
 
-		function statusText(status, message) {
+		function statusText(status: string, message: string) {
 			if (status === "saving") return L.saving;
 			if (status === "dirty") return L.dirty;
 			if (status === "error") return message ? L.saveFailed + ": " + message : L.saveFailed;
 			return L.saved;
 		}
 
-		function PromptListRow({ entry, selected, onSelect }) {
+		function PromptListRow({ entry, selected, onSelect }: { entry: PromptEntry; selected: boolean; onSelect(): void }) {
 			useLabels();
 			const [hover, setHover] = useState(false);
 			const draft = entry.kind === "custom" && (!entry.title.trim() || !entry.prompt.trim());
@@ -571,7 +544,7 @@ window.__ModuleLoader__.load({
 				React.createElement("span", { style: managerStyles.rowDesc }, description || " "));
 		}
 
-		function PromptTextField({ label, value, placeholder, maxLength, readOnly, multiline, fill, onChange, onBlur }) {
+		function PromptTextField({ label, value, placeholder, maxLength, readOnly, multiline, fill, onChange, onBlur }: { label: string; value?: string; placeholder?: string; maxLength?: number; readOnly?: boolean; multiline?: boolean; fill?: boolean; onChange?(value: string): void; onBlur?(): void }) {
 			const [focused, setFocused] = useState(false);
 			const focusStyle = focused && !readOnly
 				? { borderColor: "var(--dsw-alias-state-business-primary, #4176e6)", background: "var(--dsw-alias-bg-layer-1, #fff)" }
@@ -581,7 +554,7 @@ window.__ModuleLoader__.load({
 			const grow = fill && multiline
 				? { flexGrow: 1, flexShrink: 1, flexBasis: "auto", height: "auto", minHeight: "160px", maxHeight: "none", resize: "none" }
 				: null;
-			const style = Object.assign({}, base, grow, focusStyle, readOnly ? { color: "var(--dsw-alias-label-secondary, #61666b)" } : null);
+			const style = Object.assign({}, base, grow as React.CSSProperties | null, focusStyle, readOnly ? { color: "var(--dsw-alias-label-secondary, #61666b)" } : null);
 			const fieldStyle = fill ? Object.assign({}, managerStyles.field, { flexGrow: 1, flexShrink: 1, flexBasis: "auto", minHeight: 0 }) : managerStyles.field;
 			const common = {
 				value: value === undefined || value === null ? "" : value,
@@ -591,7 +564,7 @@ window.__ModuleLoader__.load({
 				"aria-label": label,
 				onFocus: () => setFocused(true),
 				onBlur: () => { setFocused(false); if (onBlur) onBlur(); },
-				onChange: onChange ? (event) => onChange(event.target.value) : undefined,
+				onChange: onChange ? (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(event.target.value) : undefined,
 				style,
 			};
 			return React.createElement("label", { style: fieldStyle },
@@ -601,7 +574,7 @@ window.__ModuleLoader__.load({
 					: React.createElement("input", Object.assign({ type: "text" }, common)));
 		}
 
-		function BuiltinPresetView({ preset }) {
+		function BuiltinPresetView({ preset }: { preset: PromptEntry }) {
 			useLabels();
 			return React.createElement("div", { style: managerStyles.preset },
 				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 } },
@@ -615,7 +588,7 @@ window.__ModuleLoader__.load({
 		/* One custom preset: local draft + debounced write-through. The write
 		 * chain keeps requests in order, the unmount flush is keepalive so a
 		 * switch between list rows never loses the last keystrokes. */
-		function CustomPresetEditor({ preset, onLocalChange, onDeleted }) {
+		function CustomPresetEditor({ preset, onLocalChange, onDeleted }: { preset: PromptEntry; onLocalChange(next: PromptFields): void; onDeleted(next: PromptPayload): void }) {
 			useLabels();
 			const [draft, setDraft] = useState({ title: preset.title, description: preset.description, prompt: preset.prompt });
 			const [status, setStatus] = useState("saved");
@@ -625,11 +598,11 @@ window.__ModuleLoader__.load({
 			const draftRef = useRef(draft);
 			const dirtyRef = useRef(false);
 			const aliveRef = useRef(true);
-			const timerRef = useRef(null);
+			const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 			const chainRef = useRef(Promise.resolve());
 			const deletedRef = useRef(false);
 
-			const flush = (keepalive) => {
+			const flush = (keepalive: boolean) => {
 				if (deletedRef.current) return;
 				if (timerRef.current !== null) { clearTimeout(timerRef.current); timerRef.current = null; }
 				if (!dirtyRef.current) return;
@@ -646,14 +619,14 @@ window.__ModuleLoader__.load({
 						dirtyRef.current = true;
 						if (aliveRef.current) {
 							setStatus("error");
-							setMessage(error && error.message ? error.message : "");
+							setMessage(errorDetails(error).message ?? "");
 						}
 					}
 				};
 				chainRef.current = chainRef.current.then(run, run);
 			};
 
-			const change = (field, value) => {
+			const change = (field: keyof PromptFields, value: string) => {
 				const next = Object.assign({}, draftRef.current, { [field]: value });
 				draftRef.current = next;
 				dirtyRef.current = true;
@@ -684,7 +657,7 @@ window.__ModuleLoader__.load({
 					deletedRef.current = false;
 					setDeleting(false);
 					setStatus("error");
-					setMessage(error && error.message ? error.message : "");
+					setMessage(errorDetails(error).message ?? "");
 				}
 			};
 
@@ -710,8 +683,8 @@ window.__ModuleLoader__.load({
 
 		function PromptManagerSection() {
 			useLabels();
-			const [data, setData] = useState(null);
-			const [selectedKey, setSelectedKey] = useState(null);
+			const [data, setData] = useState<PromptPayload | null>(null);
+			const [selectedKey, setSelectedKey] = useState<string | null>(null);
 			const [loading, setLoading] = useState(true);
 			const [error, setError] = useState("");
 			const [notice, setNotice] = useState("");
@@ -721,7 +694,7 @@ window.__ModuleLoader__.load({
 				setLoading(true);
 				listPrompts()
 					.then((next) => { setData(next); setError(""); })
-					.catch((failure) => setError((failure && failure.message) || L.loadFailed))
+					.catch((failure) => setError(errorDetails(failure).message || L.loadFailed))
 					.finally(() => setLoading(false));
 			};
 
@@ -751,19 +724,19 @@ window.__ModuleLoader__.load({
 					setData({ builtins: next.builtins, custom: next.custom });
 					setSelectedKey("custom:" + next.createdId);
 				} catch (failure) {
-					setError((failure && failure.message) || L.saveFailed);
+					setError(errorDetails(failure).message || L.saveFailed);
 				} finally {
 					setCreating(false);
 				}
 			};
 
-			const handleLocalChange = (id, next) => {
+			const handleLocalChange = (id: string, next: PromptFields) => {
 				setData((current) => current === null ? current : Object.assign({}, current, {
 					custom: current.custom.map((item) => item.id === id ? Object.assign({}, item, next) : item),
 				}));
 			};
 
-			const handleDeleted = (response) => {
+			const handleDeleted = (response: PromptPayload) => {
 				const remaining = response.custom;
 				setData({ builtins: response.builtins, custom: remaining });
 				const next = remaining[0]
@@ -829,13 +802,13 @@ window.__ModuleLoader__.load({
 									}))));
 		}
 
-		const inject = ["slots"];
 
-		function apply(ctx) {
+
+		function apply(ctx: ClientContext) {
 			const face = {
 				load: loadState,
-				goal: (sessionId, value) => post(API.goal, sessionId, value),
-				project: (sessionId, value) => post(API.project, sessionId, value),
+				goal: (sessionId: string, value: string | null) => post(API.goal, sessionId, value),
+				project: (sessionId: string, value: string | null) => post(API.project, sessionId, value),
 			};
 			ctx.slots.inject("conversation.hero.options", () => ctx.slots.register({
 				name: "conversation.hero.options",
@@ -862,9 +835,5 @@ window.__ModuleLoader__.load({
 			}, PromptManagerSection));
 		}
 
-		exports.apply = apply;
-		exports.inject = inject;
-		return module.exports;
-	},
-});
-})();
+export { apply };
+export const inject = ['slots'];

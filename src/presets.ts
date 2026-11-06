@@ -4,7 +4,7 @@
  * Goals are a dimension ORTHOGONAL to agent presets (modes): a mode picks the
  * toolset and persona through the preset registry, while a goal layers its
  * text onto any mode as one scoped prompt section the host half registers on
- * each top-level agent (src/index.js). Goals therefore never appear as agent
+ * each top-level agent (src/index.ts). Goals therefore never appear as agent
  * presets, and no goal text is coupled to a particular preset tree — the
  * version-coupled PTC clone machinery this file used to carry is gone.
  *
@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Package root (this file lives in src/). */
+/** Package root (the generated module lives in lib/). */
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** The seven development-goal system-prompt presets, in picker order. */
@@ -57,7 +57,7 @@ export const ACTIVE_PRESET_HEADER = [
  * @returns goal id to trimmed text.
  */
 export function loadGoalTexts() {
-  const texts = {}
+  const texts: Record<string, string> = {}
   for (const goal of GOALS) {
     texts[goal.id] = readFileSync(join(PACKAGE_ROOT, 'prompts', goal.file), 'utf8').trim()
   }
@@ -82,7 +82,7 @@ export function loadGoalTexts() {
  * @returns {{text: string, state: {goal: string|null, header: boolean}}} the
  *   section text for this assembly and the state to carry to the next one.
  */
-export function renderGoalSection(goal, body, previous) {
+export function renderGoalSection(goal: string | null, body: string, previous: { goal: string | null; header: boolean } | undefined) {
   const header = previous !== undefined && (previous.goal !== goal || previous.header) && body !== ''
   return {
     text: header ? ACTIVE_PRESET_HEADER + '\n\n' + body : body,

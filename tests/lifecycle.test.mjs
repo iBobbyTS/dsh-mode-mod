@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test from 'node:test'
-import { apply } from '../src/index.js'
-import { PTC_GUIDANCE_TEXT } from '../src/guidance.js'
+import test, { after } from 'node:test'
+import { apply } from '../lib/index.js'
+import { PTC_GUIDANCE_TEXT } from '../lib/guidance.js'
 
 // The plugin reads and writes plugin data under DSH_HOME; keep the suite off
 // the developer's real store.
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'mode-mod-lifecycle-'))
+after(() => rmSync(process.env.DSH_HOME, { recursive: true, force: true }))
 
 function fixture() {
   const pluginEffects = []

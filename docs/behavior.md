@@ -116,7 +116,7 @@
    the deleted preset (no stored value) is frozen in memory as well; a
    closed session known only through the project default is not
    enumerable, so clearing that default is all the plugin can do.
-5. **run_code guidance, host-injected** (`src/guidance.js`) — one
+5. **run_code guidance, host-injected** (`src/guidance.ts`) — one
    system-prompt section after the tools SDK bindings reminding the model
    that `run_code`'s own `description` argument is required and nested
    tool-call descriptions do not satisfy it. Injected on every agent —
@@ -156,10 +156,16 @@ From a checkout of this fork:
 
 ```sh
 pnpm install --frozen-lockfile
-node --test tests/*.test.mjs
+pnpm check
 node tools/verify-template.mjs /absolute/path/to/deepseek-harness
 ```
 
 The latest source/automated compatibility check targeted DSH `0.2.2-rc.1`; this is not a Desktop UI acceptance result. Use the matching release checkout rather than assuming newer master has the same preset. The verifier compares conditional expressions as data and checks the native PTC executor row as well as the remaining Creator rows.
 
 The default mode for a profile is configured by `agent-preset-registry`; `defaultGoal` in this plugin's bundle patch sets the independent goal default. Installation and updates use the [README](../README.md).
+
+### Source and delivery
+
+Edit `src/*.ts`; `pnpm build:runtime` regenerates the committed Host modules and wrapped Client in `lib/`, with maps. The API's pure data types live in `src/protocol.ts`; Host and Client have separate type configurations. Prompts, locale, icon and both patch files remain package-root resources.
+
+Use the pinned pnpm version and Node 22.19+ on the Node 22 line or Node 24.11+ for development tools. `pnpm typecheck` checks both environments. `pnpm test` builds a temporary candidate and runs Host, Client and template regressions. `pnpm check:dist` rebuilds without replacing working lib, compares the full generated set, checks the packed entries/maps/resources and installs the tarball in a temporary project. `pnpm check` reuses one candidate build for tests and distribution checks. Installation loads committed JS and never compiles TS or writes a daily Profile during checks.

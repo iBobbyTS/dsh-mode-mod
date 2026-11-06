@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ACTIVE_PRESET_HEADER, renderGoalSection } from '../src/presets.js'
+import { ACTIVE_PRESET_HEADER, renderGoalSection } from '../lib/presets.js'
 
 /** Advance one assembly, asserting the section text. */
 function step(goal, body, previous, expectedText) {

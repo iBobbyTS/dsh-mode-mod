@@ -1,3 +1,5 @@
+import type { ProjectStore, SessionStore, RetiredPrompt, PromptDocument, PromptEntry, PromptFields } from './protocol.js'
+import { errorDetails } from './errors.js'
 /**
  * Project-default persistence for the system-prompt-preset (goal) dimension —
  * one JSON document under plugin data.
@@ -42,7 +44,7 @@ export function storePath(home = dshHome()) {
  * @param cwd - a session working directory.
  * @returns the project root to key values by.
  */
-export function resolveProjectRoot(cwd) {
+export function resolveProjectRoot(cwd: string) {
   let dir = cwd
   while (true) {
     if (existsSync(join(dir, '.git'))) return dir
@@ -52,7 +54,7 @@ export function resolveProjectRoot(cwd) {
   }
 }
 
-function emptyStore() {
+function emptyStore(): ProjectStore {
   return { version: STORE_VERSION, projects: {} }
 }
 
@@ -61,16 +63,16 @@ function emptyStore() {
  * @param home - the DSH home root.
  * @returns the parsed store.
  */
-export async function readStore(home = dshHome()) {
+export async function readStore(home = dshHome()): Promise<ProjectStore> {
   try {
     const raw = await readFile(storePath(home), 'utf8')
-    const parsed = JSON.parse(raw)
+    const parsed: Record<string, unknown> = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
     if (parsed.version !== STORE_VERSION) throw new Error(`unsupported version ${parsed.version}`)
     if (parsed.projects === null || typeof parsed.projects !== 'object' || Array.isArray(parsed.projects)) throw new Error('projects is not an object')
-    return parsed
+    return parsed as unknown as ProjectStore
   } catch (error) {
-    if (error?.code !== 'ENOENT') console.warn(`mode-mod store: reading ${storePath(home)} failed (${error?.message ?? error}); treating as empty`)
+    if (errorDetails(error).code !== 'ENOENT') console.warn(`mode-mod store: reading ${storePath(home)} failed (${errorDetails(error).message ?? error}); treating as empty`)
     return emptyStore()
   }
 }
@@ -80,7 +82,7 @@ export async function readStore(home = dshHome()) {
  * @param store - the complete document.
  * @param home - the DSH home root.
  */
-export async function writeStore(store, home = dshHome()) {
+export async function writeStore(store: ProjectStore, home = dshHome()) {
   const target = storePath(home)
   await mkdir(dirname(target), { recursive: true })
   const tmp = join(parse(target).dir, `.project-system-prompt-preset.${process.pid}.tmp`)
@@ -89,7 +91,7 @@ export async function writeStore(store, home = dshHome()) {
 }
 
 /** True when candidate is root itself or a path underneath it. */
-function isUnder(root, candidate) {
+function isUnder(root: string, candidate: string) {
   return candidate === root || candidate.startsWith(root + sep)
 }
 
@@ -99,8 +101,8 @@ function isUnder(root, candidate) {
  * @param root - the resolved project root.
  * @returns the goal id, or undefined when no ancestor declares one.
  */
-export function lookupProjectValue(store, root) {
-  let best
+export function lookupProjectValue(store: ProjectStore, root: string) {
+  let best: [string, string] | undefined
   for (const [key, value] of Object.entries(store.projects ?? {})) {
     if (typeof value !== 'string') continue
     if (isUnder(key, root) && (best === undefined || key.length > best[0].length)) best = [key, value]
@@ -124,8 +126,8 @@ export const CUSTOM_PROMPT_LIMITS = Object.freeze({
 const CUSTOM_ID_PATTERN = /^custom-[0-9a-f]{12}$/
 
 /** An error the prompt routes map to a 4xx response. */
-function presetError(code, message) {
-  const error = new Error(message)
+function presetError(code: string, message: string) {
+  const error = new Error(message) as Error & { code: string }
   error.code = code
   return error
 }
@@ -138,7 +140,7 @@ function presetError(code, message) {
  * @param limit - the maximum character count.
  * @returns the trimmed one-line text.
  */
-function singleLine(value, label, limit) {
+function singleLine(value: unknown, label: string, limit: number) {
   if (value === undefined || value === null) return ''
   if (typeof value !== 'string') throw presetError('validation', label + ' must be a string')
   const text = value.replace(/[\r\n]+/g, ' ').trim()
@@ -152,7 +154,7 @@ function singleLine(value, label, limit) {
  * @param value - the raw prompt text.
  * @returns the trimmed prompt text.
  */
-function promptText(value) {
+function promptText(value: unknown) {
   if (value === undefined || value === null) return ''
   if (typeof value !== 'string') throw presetError('validation', 'system prompt must be a string')
   const text = value.replace(/\r\n/g, '\n').trim()
@@ -169,8 +171,8 @@ function promptText(value) {
  * @param fallback - the current entry for a partial update.
  * @returns the normalized title, description, and prompt.
  */
-function normalizePreset(input, fallback = {}) {
-  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+function normalizePreset(input: unknown, fallback: Partial<PromptFields> = {}) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
   return {
     title: singleLine(source.title === undefined ? fallback.title : source.title, 'title', CUSTOM_PROMPT_LIMITS.title),
     description: singleLine(
@@ -182,7 +184,7 @@ function normalizePreset(input, fallback = {}) {
   }
 }
 
-function emptyCustomPrompts() {
+function emptyCustomPrompts(): PromptDocument {
   return { version: STORE_VERSION, prompts: [] }
 }
 
@@ -192,15 +194,15 @@ function emptyCustomPrompts() {
  * @param home - the DSH home root.
  * @returns the parsed document.
  */
-export async function readCustomPrompts(home = dshHome()) {
+export async function readCustomPrompts(home = dshHome()): Promise<PromptDocument> {
   try {
     const raw = await readFile(customPromptsPath(home), 'utf8')
-    const parsed = JSON.parse(raw)
+    const parsed: Record<string, unknown> = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
     if (parsed.version !== STORE_VERSION) throw new Error('unsupported version ' + parsed.version)
     if (!Array.isArray(parsed.prompts)) throw new Error('prompts is not an array')
     const seen = new Set()
-    const prompts = []
+    const prompts: PromptEntry[] = []
     for (const entry of parsed.prompts) {
       if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
       if (typeof entry.id !== 'string' || !CUSTOM_ID_PATTERN.test(entry.id) || seen.has(entry.id)) continue
@@ -216,8 +218,8 @@ export async function readCustomPrompts(home = dshHome()) {
     }
     return { version: STORE_VERSION, prompts }
   } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      console.warn('mode-mod store: reading ' + customPromptsPath(home) + ' failed (' + (error?.message ?? error) + '); treating as empty')
+    if (errorDetails(error).code !== 'ENOENT') {
+      console.warn('mode-mod store: reading ' + customPromptsPath(home) + ' failed (' + (errorDetails(error).message ?? error) + '); treating as empty')
     }
     return emptyCustomPrompts()
   }
@@ -228,7 +230,7 @@ export async function readCustomPrompts(home = dshHome()) {
  * @param doc - the complete document.
  * @param home - the DSH home root.
  */
-async function writeCustomPrompts(doc, home) {
+async function writeCustomPrompts(doc: PromptDocument, home: string) {
   const target = customPromptsPath(home)
   await mkdir(dirname(target), { recursive: true })
   const tmp = join(parse(target).dir, '.custom-system-prompts.' + process.pid + '.tmp')
@@ -242,10 +244,10 @@ async function writeCustomPrompts(doc, home) {
  * @param home - the DSH home root.
  * @returns the new document and the created entry.
  */
-export async function createCustomPrompt(input, home = dshHome()) {
+export async function createCustomPrompt(input: unknown, home = dshHome()) {
   const doc = await readCustomPrompts(home)
   const preset = normalizePreset(input)
-  let id
+  let id: string
   do { id = 'custom-' + randomBytes(6).toString('hex') } while (doc.prompts.some((entry) => entry.id === id))
   const now = Date.now()
   const entry = { id, ...preset, createdAt: now, updatedAt: now }
@@ -262,7 +264,7 @@ export async function createCustomPrompt(input, home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the new document and the updated entry.
  */
-export async function updateCustomPrompt(id, input, home = dshHome()) {
+export async function updateCustomPrompt(id: string, input: unknown, home = dshHome()) {
   const doc = await readCustomPrompts(home)
   const index = doc.prompts.findIndex((entry) => entry.id === id)
   if (index === -1) throw presetError('not-found', 'unknown custom preset: ' + id)
@@ -279,7 +281,7 @@ export async function updateCustomPrompt(id, input, home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the new document and the removed entry.
  */
-export async function deleteCustomPrompt(id, home = dshHome()) {
+export async function deleteCustomPrompt(id: string, home = dshHome()) {
   const doc = await readCustomPrompts(home)
   const index = doc.prompts.findIndex((entry) => entry.id === id)
   if (index === -1) throw presetError('not-found', 'unknown custom preset: ' + id)
@@ -297,7 +299,7 @@ export async function deleteCustomPrompt(id, home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the document after the update.
  */
-export async function retireSessionValues(records, home = dshHome()) {
+export async function retireSessionValues(records: ReadonlyMap<string, RetiredPrompt>, home = dshHome()) {
   const doc = await readSessionOverrides(home)
   if (records.size === 0) return doc
   for (const [sessionId, retired] of records) {
@@ -315,7 +317,7 @@ export async function retireSessionValues(records, home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the store after the update.
  */
-export async function clearProjectValues(value, home = dshHome()) {
+export async function clearProjectValues(value: string, home = dshHome()) {
   const store = await readStore(home)
   let changed = false
   for (const [root, current] of Object.entries(store.projects)) {
@@ -346,17 +348,17 @@ export function sessionOverridesPath(home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the parsed document.
  */
-export async function readSessionOverrides(home = dshHome()) {
+export async function readSessionOverrides(home = dshHome()): Promise<SessionStore> {
   try {
     const raw = await readFile(sessionOverridesPath(home), 'utf8')
-    const parsed = JSON.parse(raw)
+    const parsed: Record<string, unknown> = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
     if (parsed.version !== STORE_VERSION) throw new Error('unsupported version ' + parsed.version)
     if (parsed.sessions === null || typeof parsed.sessions !== 'object' || Array.isArray(parsed.sessions)) throw new Error('sessions is not an object')
     for (const key of Object.keys(parsed.sessions)) {
-      if (parsed.sessions[key] === null) parsed.sessions[key] = 'none'
+      if ((parsed.sessions as Record<string, unknown>)[key] === null) (parsed.sessions as Record<string, unknown>)[key] = 'none'
     }
-    const retired = {}
+    const retired: Record<string, RetiredPrompt> = {}
     if (parsed.retired !== null && typeof parsed.retired === 'object' && !Array.isArray(parsed.retired)) {
       for (const [sessionId, entry] of Object.entries(parsed.retired)) {
         if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -365,9 +367,9 @@ export async function readSessionOverrides(home = dshHome()) {
       }
     }
     parsed.retired = retired
-    return parsed
+    return parsed as unknown as SessionStore
   } catch (error) {
-    if (error?.code !== 'ENOENT') console.warn('mode-mod store: reading ' + sessionOverridesPath(home) + ' failed (' + (error?.message ?? error) + '); treating as empty')
+    if (errorDetails(error).code !== 'ENOENT') console.warn('mode-mod store: reading ' + sessionOverridesPath(home) + ' failed (' + (errorDetails(error).message ?? error) + '); treating as empty')
     return { version: STORE_VERSION, sessions: {}, retired: {} }
   }
 }
@@ -380,7 +382,7 @@ export async function readSessionOverrides(home = dshHome()) {
  * @param home - the DSH home root.
  * @returns the document after the update.
  */
-export async function setSessionOverride(sessionId, value, home = dshHome()) {
+export async function setSessionOverride(sessionId: string, value: string | null | undefined, home = dshHome()) {
   const doc = await readSessionOverrides(home)
   if (value === null || value === undefined) delete doc.sessions[sessionId]
   else doc.sessions[sessionId] = value
@@ -396,7 +398,7 @@ export async function setSessionOverride(sessionId, value, home = dshHome()) {
  * @param doc - the complete document.
  * @param home - the DSH home root.
  */
-async function writeSessionOverrides(doc, home) {
+async function writeSessionOverrides(doc: SessionStore, home: string) {
   const target = sessionOverridesPath(home)
   await mkdir(dirname(target), { recursive: true })
   const tmp = join(parse(target).dir, '.session-goal-overrides.' + process.pid + '.tmp')
@@ -412,7 +414,7 @@ async function writeSessionOverrides(doc, home) {
  * @param home - the DSH home root.
  * @returns the store after the update.
  */
-export async function setProjectValue(root, value, home = dshHome()) {
+export async function setProjectValue(root: string, value: string | null, home = dshHome()) {
   const store = await readStore(home)
   if (value === null) delete store.projects[root]
   else store.projects[root] = value

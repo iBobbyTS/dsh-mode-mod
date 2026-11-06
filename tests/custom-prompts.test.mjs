@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import test from 'node:test'
-import { apply } from '../src/index.js'
+import test, { after } from 'node:test'
+import { apply } from '../lib/index.js'
 
 const LIVE = 'session-11111111-2222-3333-4444-555555555555'
 const CLOSED = 'session-66666666-7777-8888-9999-aaaaaaaaaaaa'
 const CWD = '/repo/sub'
 
 /** A throwaway DSH home: the stores are read and written relative to DSH_HOME. */
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'mode-mod-tests-'))
+after(() => rmSync(fixtureRoot, { recursive: true, force: true }))
+
 function home() {
-  const dir = mkdtempSync(join(tmpdir(), 'mode-mod-prompts-'))
+  const dir = mkdtempSync(join(fixtureRoot, 'prompts-'))
   process.env.DSH_HOME = dir
   return dir
 }

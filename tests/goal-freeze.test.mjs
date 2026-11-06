@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import test from 'node:test'
-import { apply } from '../src/index.js'
+import test, { after } from 'node:test'
+import { apply } from '../lib/index.js'
 
 const SESSION = 'session-11111111-2222-3333-4444-555555555555'
 const FORK = 'session-66666666-7777-8888-9999-aaaaaaaaaaaa'
 const SUBAGENT = 'session-bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
 
 /** A throwaway DSH home: the store is read and written relative to DSH_HOME. */
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'mode-mod-tests-'))
+after(() => rmSync(fixtureRoot, { recursive: true, force: true }))
+
 function home() {
-  const dir = mkdtempSync(join(tmpdir(), 'mode-mod-freeze-'))
+  const dir = mkdtempSync(join(fixtureRoot, 'freeze-'))
   process.env.DSH_HOME = dir
   return dir
 }

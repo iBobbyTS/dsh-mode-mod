@@ -1,6 +1,6 @@
 /**
  * PTC tool-call guidance text — one system-prompt section the host half
- * (src/index.js) injects on every agent whose live composition presents PTC
+ * (src/index.ts) injects on every agent whose live composition presents PTC
  * (presets ptc and cordis), placed right after the tools SDK bindings.
  *
  * It reminds the model that the run_code tool's own `description` argument is

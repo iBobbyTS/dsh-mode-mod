@@ -1,3 +1,7 @@
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { HostContext, Agent, PromptService, PromptSection, Route } from './host-contract.js'
+import type { ProjectStore, SessionStore, RetiredPrompt, PromptDocument } from './protocol.js'
+import { errorDetails } from './errors.js'
 /**
  * dsh-mode-mod host half. Two ORTHOGONAL dimensions over one plugin row:
  *
@@ -69,7 +73,7 @@ const GUIDANCE_PRESETS = new Set(['ptc', 'cordis'])
 const SESSION_ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** Loopback + same-origin browser markers, mirroring the host /api trust model. */
-function isLocalBrowserRequest(req) {
+function isLocalBrowserRequest(req: IncomingMessage) {
   const address = req.socket?.remoteAddress
   if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
   const host = req.headers?.host
@@ -84,7 +88,7 @@ function isLocalBrowserRequest(req) {
 }
 
 /** Write one JSON response. */
-function json(res, status, body) {
+function json(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
 }
@@ -95,14 +99,14 @@ function json(res, status, body) {
  * @param limit - the maximum accepted byte count.
  * @returns the parsed body.
  */
-function readJsonBody(req, limit = 16 * 1024) {
-  return new Promise((resolve, reject) => {
+function readJsonBody(req: IncomingMessage, limit = 16 * 1024) {
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
     let size = 0
-    const chunks = []
+    const chunks: Buffer[] = []
     req.on('data', (chunk) => {
       size += chunk.length
       if (size > limit) {
-        const error = new Error('body too large')
+        const error = new Error('body too large') as Error & { code: string }
         error.code = 'body-too-large'
         reject(error)
         req.destroy()
@@ -123,7 +127,7 @@ function readJsonBody(req, limit = 16 * 1024) {
  * @param ctx - plugin context with agentPresets, webServer, and agents injected.
  * @param config - plugin config; `defaultGoal` names the global-tier goal id (none when absent/unknown).
  */
-export function apply(ctx, config = {}) {
+export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) {
   const texts = loadGoalTexts()
   const builtinById = new Map(GOALS.map((goal) => [goal.id, goal]))
   const rawDefault = config?.defaultGoal
@@ -133,18 +137,18 @@ export function apply(ctx, config = {}) {
   }
 
   /** Live top-level sessions by session id: { agent, cwd } — the API's handle for goal writes and project stars. */
-  const sessions = new Map()
+  const sessions = new Map<string, { agent: Agent; cwd?: string }>()
 
   /** Session values (the frozen goal plus every later picker switch); hydrated at boot. */
-  let overridesSnapshot = { version: 1, sessions: {} }
+  let overridesSnapshot: SessionStore = { version: 1, sessions: {}, retired: {} }
 
   /** Project defaults; re-read on every API call so a store edit is never stale. */
-  let storeSnapshot = { version: 1, projects: {} }
+  let storeSnapshot: ProjectStore = { version: 1, projects: {} }
   const refreshStore = async () => { storeSnapshot = await readStore() }
 
   /** User-authored presets; hydrated at boot and replaced by every mutation. */
-  let customSnapshot = { version: 1, prompts: [] }
-  const customById = (id) => customSnapshot.prompts.find((preset) => preset.id === id)
+  let customSnapshot: PromptDocument = { version: 1, prompts: [] }
+  const customById = (id: string) => customSnapshot.prompts.find((preset) => preset.id === id)
   /** Only complete presets are offered in the picker; an empty draft stays in the manager. */
   const selectableCustom = () => customSnapshot.prompts.filter((preset) => preset.title.trim() !== '' && preset.prompt.trim() !== '')
 
@@ -153,17 +157,17 @@ export function apply(ctx, config = {}) {
    * prompt keeps rendering the deleted text until the user selects a new
    * preset for that session. The stored session value is already null.
    */
-  const retiredPrompts = new Map()
+  const retiredPrompts = new Map<string, RetiredPrompt>()
 
   /**
    * The exact section text each live session assembled last, so deletion can
    * freeze the bytes the harness already committed (including the sticky
    * supersedes header) instead of re-rendering them from scratch.
    */
-  const lastRendered = new Map()
+  const lastRendered = new Map<string, string>()
 
   /** Read the display name of one goal id, falling back to the raw id. */
-  const goalName = (id) => {
+  const goalName = (id: string | null | undefined) => {
     if (id === null || id === undefined) return null
     const builtin = builtinById.get(id)
     if (builtin !== undefined) return builtin.name
@@ -173,13 +177,13 @@ export function apply(ctx, config = {}) {
   }
 
   /** Read the system-prompt body of one goal id; '' for none/unknown. */
-  const goalText = (id) => {
+  const goalText = (id: string | null | undefined) => {
     if (id === null || id === undefined) return ''
     return texts[id] ?? customById(id)?.prompt ?? ''
   }
 
   /** Whether a value names a goal the picker/API may write. */
-  const knownGoal = (id) => builtinById.has(id) || customById(id) !== undefined
+  const knownGoal = (id: unknown): boolean => typeof id === 'string' && ( builtinById.has(id) || customById(id) !== undefined)
 
   /**
    * Boot hydration. A session may start before these reads settle; until they
@@ -198,31 +202,31 @@ export function apply(ctx, config = {}) {
         retiredPrompts.set(sessionId, retired)
       }
     })
-    .catch((error) => { ctx.logger.warn('mode-mod: reading plugin data failed: ' + (error?.message ?? error)) })
+    .catch((error) => { ctx.logger.warn('mode-mod: reading plugin data failed: ' + (errorDetails(error).message ?? error)) })
     .finally(() => { hydrated = true })
   void hydration
 
   /** In-flight freeze writes by session id, so a state read answers with the value it just pinned. */
-  const pendingFreezes = new Map()
+  const pendingFreezes = new Map<string, Promise<void>>()
 
   /** Override writes are read-modify-write of one document: run them one at a time. */
-  let writeChain = Promise.resolve()
+  let writeChain: Promise<unknown> = Promise.resolve()
 
   /** Custom-preset writes are read-modify-write of one document: run them one at a time. */
-  let promptWriteChain = Promise.resolve()
-  const writePrompts = (fn) => {
+  let promptWriteChain: Promise<unknown> = Promise.resolve()
+  const writePrompts = <T>(fn: () => Promise<T>) => {
     const run = promptWriteChain.then(fn)
     promptWriteChain = run.catch(() => {})
     return run
   }
-  const writeOverride = (sessionId, value) => {
+  const writeOverride = (sessionId: string, value: string | null | undefined) => {
     const write = writeChain.then(async () => {
       try {
         overridesSnapshot = value === undefined
           ? await readSessionOverrides()
           : await setSessionOverride(sessionId, value)
       } catch (error) {
-        ctx.logger.warn('mode-mod: writing the session value for ' + sessionId + ' failed: ' + (error?.message ?? error))
+        ctx.logger.warn('mode-mod: writing the session value for ' + sessionId + ' failed: ' + (errorDetails(error).message ?? error))
       }
     })
     writeChain = write
@@ -235,7 +239,7 @@ export function apply(ctx, config = {}) {
    * @param value - a stored session value or project default.
    * @returns the goal id, null for none, or undefined when the tier did not choose.
    */
-  const tierGoal = (value) => {
+  const tierGoal = (value: unknown) => {
     if (value === 'none') return null
     if (typeof value !== 'string') return undefined
     if (knownGoal(value)) return value
@@ -251,7 +255,7 @@ export function apply(ctx, config = {}) {
    * @param cwd - the session working directory, when it has one.
    * @returns the goal id, or null for no goal.
    */
-  const inheritedGoal = (cwd) => {
+  const inheritedGoal = (cwd: string | undefined) => {
     if (cwd !== undefined) {
       const projectTier = tierGoal(lookupProjectValue(storeSnapshot, resolveProjectRoot(cwd)))
       if (projectTier !== undefined) return projectTier
@@ -268,7 +272,7 @@ export function apply(ctx, config = {}) {
    * @param agent - the top-level agent whose session starts.
    * @returns the resolved goal id, or null.
    */
-  const freezeSessionGoal = (agent) => {
+  const freezeSessionGoal = (agent: Agent) => {
     const id = agent.session.id
     const resolved = inheritedGoal(agent.session.header.cwd)
     const value = resolved ?? 'none'
@@ -285,7 +289,7 @@ export function apply(ctx, config = {}) {
    * @param agent - the top-level agent.
    * @returns the goal id, or null for none.
    */
-  const goalFor = (agent) => {
+  const goalFor = (agent: Agent) => {
     const sessionTier = tierGoal(overridesSnapshot.sessions[agent.session.id])
     if (sessionTier !== undefined) return sessionTier
     if (!hydrated) return inheritedGoal(agent.session.header.cwd)
@@ -298,17 +302,17 @@ export function apply(ctx, config = {}) {
    * @param header - the session header.
    * @returns true for a top-level session.
    */
-  const isTopLevel = (header) => header.origin !== 'subagent'
+  const isTopLevel = (header: Agent['session']['header']) => header.origin !== 'subagent'
     && (header.parentSession === undefined || (header.isSeeded === true && (header.delegationDepth ?? 0) === 0))
 
   // 1. Per-agent prompt sections, registered through each agent's own scope.
   /** Goal-section assembly state per top-level agent (renderGoalSection's `previous`). */
-  const goalSectionState = new WeakMap()
+  const goalSectionState = new WeakMap<Agent, { goal: string | null; header: boolean }>()
   ctx.effect(() => {
     // Agent scopes can outlive this plugin during hot reload. Release their
     // registrations on either lifetime, so no provider retains a dead plugin.
-    const sectionDisposers = new Set()
-    const sectionFor = (agent, prompt, section, label) => agent.ctx.effect(() => {
+    const sectionDisposers = new Set<() => void>()
+    const sectionFor = (agent: Agent, prompt: PromptService, section: PromptSection, label: string) => agent.ctx.effect(() => {
       const unregister = prompt.section(section)
       const dispose = () => {
         if (!sectionDisposers.delete(dispose)) return
@@ -317,7 +321,7 @@ export function apply(ctx, config = {}) {
       sectionDisposers.add(dispose)
       return dispose
     }, label)
-    const register = (agent) => {
+    const register = (agent: Agent) => {
       const prompt = agent.ctx.get('systemPrompt')
       if (prompt === undefined) {
         ctx.logger.warn('mode-mod: systemPrompt service unavailable; sections skipped for ' + agent.id)
@@ -356,13 +360,13 @@ export function apply(ctx, config = {}) {
         text: (context) => {
           const target = context?.agent ?? agent
           const preset = target.ctx.get('agentPresets')?.composedPreset(target.ctx)
-          return GUIDANCE_PRESETS.has(preset) ? PTC_GUIDANCE_TEXT : ''
+          return GUIDANCE_PRESETS.has(preset ?? '') ? PTC_GUIDANCE_TEXT : ''
         },
       }, 'mode-mod: guidance section')
     }
-    const attempt = (agent) => {
+    const attempt = (agent: Agent) => {
       try { register(agent) } catch (error) {
-        ctx.logger.warn('mode-mod: per-agent sections failed for ' + agent.id + ': ' + (error?.message ?? error))
+        ctx.logger.warn('mode-mod: per-agent sections failed for ' + agent.id + ': ' + (errorDetails(error).message ?? error))
       }
     }
     const offCreated = ctx.on('agent/created', ({ agent }) => { attempt(agent) })
@@ -382,21 +386,21 @@ export function apply(ctx, config = {}) {
 
   // 2. The same-origin API for the browser half.
   ctx.effect(() => {
-    const display = (id) => id === null || id === undefined || id === 'none' ? null : goalName(id)
+    const display = (id: string | null | undefined) => id === null || id === undefined || id === 'none' ? null : goalName(id)
     /**
      * Describe one session's tiers.
      * @param record - its live record, or undefined for a session with no agent.
      * @param sessionId - the session to describe.
      * @returns the JSON body fields shared by the state routes.
      */
-    const stateOf = async (record, sessionId) => {
+    const stateOf = async (record: { agent: Agent; cwd?: string } | undefined, sessionId: string) => {
       await hydration
       await refreshStore()
       const pending = pendingFreezes.get(sessionId)
       if (pending !== undefined) await pending
       // Value domain per tier: null = not selected (inherit); "none" =
       // explicit no goal (blocks the tiers beneath); a goal id = that goal.
-      const sessionValue = overridesSnapshot.sessions[sessionId] ?? null
+      const sessionValue = overridesSnapshot.sessions[sessionId] as string | null | undefined ?? null
       const root = record?.cwd === undefined ? undefined : resolveProjectRoot(record.cwd)
       const projectValue = root === undefined ? undefined : lookupProjectValue(storeSnapshot, root)
       const sessionTier = tierGoal(sessionValue)
@@ -427,7 +431,7 @@ export function apply(ctx, config = {}) {
       builtins: GOALS.map((goal) => ({ id: goal.id, title: goal.name, description: goal.description, prompt: texts[goal.id] })),
       custom: customSnapshot.prompts.map((preset) => ({ ...preset })),
     })
-    const stateRoute = {
+    const stateRoute: Route = {
       method: 'GET',
       path: '/api/mode-mod/state',
       handler: async (req, res) => {
@@ -438,7 +442,7 @@ export function apply(ctx, config = {}) {
         json(res, 200, { sessionId, ...(await stateOf(sessions.get(sessionId), sessionId)), goals })
       },
     }
-    const goalRoute = {
+    const goalRoute: Route = {
       method: 'POST',
       path: '/api/mode-mod/goal',
       handler: async (req, res) => {
@@ -455,18 +459,18 @@ export function apply(ctx, config = {}) {
           return
         }
         try {
-          await writeOverride(sessionId, body.value ?? null)
+          await writeOverride(sessionId, body.value as string | null)
           // An explicit pick is the one action that may replace a deleted
           // preset's frozen text.
           retiredPrompts.delete(sessionId)
           ctx.logger.info('mode-mod: session ' + sessionId + ' goal -> ' + (body.value ?? 'unselected'))
           json(res, 200, { sessionId, ...(await stateOf(record, sessionId)), goals: goalsPayload() })
         } catch (error) {
-          json(res, 500, { error: 'write failed', detail: error?.message ?? String(error) })
+          json(res, 500, { error: 'write failed', detail: errorDetails(error).message ?? String(error) })
         }
       },
     }
-    const projectRoute = {
+    const projectRoute: Route = {
       method: 'POST',
       path: '/api/mode-mod/project',
       handler: async (req, res) => {
@@ -482,16 +486,16 @@ export function apply(ctx, config = {}) {
         }
         const root = resolveProjectRoot(record.cwd)
         try {
-          await setProjectValue(root, body.value === null ? null : body.value)
+          await setProjectValue(root, body.value as string | null)
           await refreshStore()
           ctx.logger.info('mode-mod: project ' + root + ' default goal -> ' + (body.value ?? 'cleared'))
           json(res, 200, { sessionId, ...(await stateOf(record, sessionId)), goals: goalsPayload() })
         } catch (error) {
-          json(res, 500, { error: 'write failed', detail: error?.message ?? String(error) })
+          json(res, 500, { error: 'write failed', detail: errorDetails(error).message ?? String(error) })
         }
       },
     }
-    const promptsRoute = {
+    const promptsRoute: Route = {
       method: 'GET',
       path: '/api/mode-mod/prompts',
       handler: async (req, res) => {
@@ -503,14 +507,14 @@ export function apply(ctx, config = {}) {
     /* Create/update/delete one user-authored system-prompt preset. Built-in
      * goals are shipped files and are rejected here, so the settings page can
      * only ever write the custom document. */
-    const promptRoute = {
+    const promptRoute: Route = {
       method: 'POST',
       path: '/api/mode-mod/prompt',
       handler: async (req, res) => {
         if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
         let body
         try { body = await readJsonBody(req, 256 * 1024) } catch (error) {
-          json(res, error?.code === 'body-too-large' ? 413 : 400, { error: 'invalid body' })
+          json(res, errorDetails(error).code === 'body-too-large' ? 413 : 400, { error: 'invalid body' })
           return
         }
         const action = body?.action
@@ -540,11 +544,11 @@ export function apply(ctx, config = {}) {
               await writeChain
               await refreshStore()
               const target = customById(id)
-              if (target === undefined) return { missing: true }
+              if (target === undefined) return { missing: true } as const
               // Every stored selection of the preset — live or closed — is
               // retired. A live session that inherited it without a stored
               // value is retired in memory as well.
-              const retireIds = new Set()
+              const retireIds = new Set<string>()
               for (const [sessionId, value] of Object.entries(overridesSnapshot.sessions)) {
                 if (value === id) retireIds.add(sessionId)
               }
@@ -566,7 +570,7 @@ export function apply(ctx, config = {}) {
                 })
               }
               const { doc } = await deleteCustomPrompt(id)
-              const records = new Map([...retireIds].map((sessionId) => [sessionId, retiredPrompts.get(sessionId)]))
+              const records = new Map([...retireIds].map((sessionId) => [sessionId, retiredPrompts.get(sessionId)!]))
               // The retirement is a read-modify-write of the session document:
               // append it to the same chain as goal writes, never beside it.
               const retireWrite = writeChain.then(() => retireSessionValues(records))
@@ -584,8 +588,8 @@ export function apply(ctx, config = {}) {
           }
           json(res, 400, { error: 'unknown action' })
         } catch (error) {
-          const status = error?.code === 'validation' ? 400 : error?.code === 'not-found' ? 404 : 500
-          json(res, status, { error: error?.message ?? String(error) })
+          const status = errorDetails(error).code === 'validation' ? 400 : errorDetails(error).code === 'not-found' ? 404 : 500
+          json(res, status, { error: errorDetails(error).message ?? String(error) })
         }
       },
     }

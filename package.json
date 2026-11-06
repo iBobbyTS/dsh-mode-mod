@@ -8,17 +8,18 @@
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
-  "main": "src/index.js",
+  "main": "lib/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./guidance": "./src/guidance.js",
-    "./client": "./src/client.js",
+    ".": "./lib/index.js",
+    "./guidance": "./lib/guidance.js",
+    "./client": "./lib/client.js",
     "./prompts/*": "./prompts/*",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
+    "lib",
     "src",
     "prompts",
     "presets",
@@ -48,7 +49,20 @@
     "react": "^18.2.0 || ^19.0.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@types/node": "22.20.5",
+    "@types/react": "18.3.31",
     "js-yaml": "4.3.2",
-    "react": "^18.2.0"
+    "react": "18.3.1",
+    "tsdown": "0.22.14",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json",
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "test": "node scripts/check.mjs test",
+    "check:dist": "node scripts/check.mjs dist",
+    "check": "node scripts/check.mjs all"
   }
 }
