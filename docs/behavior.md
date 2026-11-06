@@ -125,6 +125,56 @@
 6. **Creator mode** — the former `dsh-creator-source-context` override of
    `preset-cordis`: the source-reference persona suffix and PTC tool
    presentation. `tools/verify-template.mjs` compares the overlay with the selected checkout; the repository development instructions own its allowed differences.
+7. **资料搜索 mode (browser-only research)** — `presets/web-research.patch.yml`
+   inserts `preset-web-research` (id `web-research`, order 5, display name
+   资料搜索). The preset mounts a research persona, the standard compaction
+   group, and this package's `web-research-toolset` row
+   (`src/web-research.ts`); it mounts no model-facing tool row of its own and
+   no time-context row, so no clock reading is injected either.
+   That row registers a tool restriction in the PRESET scope, which every
+   agent of the preset inherits: the allow list is exactly the 22 Playwright
+   browser tools (`mcp__playwright__browser_*` minus
+   `browser_run_code_unsafe`, `browser_file_upload`, and `browser_drop`).
+   Every inherited global capability — bash/PowerShell, files and search,
+   PTC `run_code`, web search/fetch, subagent/workflow, skills, goals, todo,
+   present, plugin manager, MCP resource helpers, codegraph,
+   external_subagent — is masked for these sessions only; other modes keep
+   their full tool lists. Because the profile's Playwright MCP row can
+   register after the bundle patch, the mask recomputes on `tools/change`:
+   before any browser tool exists it denies every global tool instead of
+   leaving the catalog open, then switches to the allow list once the browser
+   appears. A new upstream browser tool stays hidden until it is added to the
+   allow list, so an upgrade cannot silently widen the mode. The same row
+   shadows MCP prompt text the mode cannot use: the shared
+   `mcp-resource-servers` section (it advertises resource tools this mode
+   masks) and every non-browser server's `mcp:<server>` instruction section,
+   so codegraph/external_subagent descriptions never enter the research
+   system prompt. It also shadows `ui:deliverable-file-references` (desktop
+   present/file-link guidance; this mode has no present tool and no local
+   files), `harness:source`, and `app:web-surface` (the checkout and Web GUI
+   developer orientation), since a browser-research session never edits files
+   or extends DSH. It also shadows `harness:identity`, the generic "You are an
+   AI agent powered by DeepSeek Harness" opener, so the research persona is the
+   mode's whole system prompt. The Playwright server's own instructions stay
+   visible, and other modes keep every section unchanged.
+   The persona sets `includeRuntimeContext: false`, which suppresses every
+   optional runtime-context entry (sandbox policy, approval policy, checkout,
+   GUI URL), and the mask shadows the one required entry
+   (`working-directory:current`) with an empty optional context. A research
+   turn therefore carries neither a runtime-context injection nor a
+   time-context message; other modes keep both. Switching into the mode clears
+   an earlier retained snapshot through the harness's own "context cleared"
+   update.
+   The browser is the shared profile-level Playwright server: same Chrome
+   profile, tabs, and login state as other sessions, no second browser and no
+   plugin-owned persistence. The persona fixes the research contract —
+   search interaction only; no login/registration, non-search form
+   submission, purchase, posting, deletion, messaging, or account changes; on
+   login walls, paywalls, or CAPTCHAs, switch sources and say what was
+   unavailable; answers are conclusion-first with links to pages actually
+   opened and a source list, cross-checking key facts where feasible. A
+   profile without Playwright MCP leaves the mode with no tools (never a
+   fallback to other capabilities); its README documents that dependency.
 
 
 ## Behavior notes
@@ -146,6 +196,9 @@
 - The mode-tier default (`agent-preset-registry.default`) and the goal-tier
   default are configured independently; pointing `selectedDefault` at a goal
   id no longer works — goals are not presets.
+- The 资料搜索 mask is preset-scoped: it never changes another mode's tool
+  list, and switching a session away from the mode lifts it when the agent's
+  scope parent rebinds to the new preset.
 
 The PTC default and maximum timeout are one day, configured by the `ptc-runtime` override in `cordis.patch.yml`. An outer `run_code` budget must cover combined inner waits; inner tools retain their own deadlines. A running Host needs a restart to load changes to a linked plugin.
 
@@ -166,6 +219,6 @@ The default mode for a profile is configured by `agent-preset-registry`; `defaul
 
 ### Source and delivery
 
-Edit `src/*.ts`; `pnpm build:runtime` regenerates the committed Host modules and wrapped Client in `lib/`, with maps. The API's pure data types live in `src/protocol.ts`; Host and Client have separate type configurations. Prompts, locale, icon and both patch files remain package-root resources.
+Edit `src/*.ts`; `pnpm build:runtime` regenerates the committed Host modules and wrapped Client in `lib/`, with maps. The API's pure data types live in `src/protocol.ts`; Host and Client have separate type configurations. Prompts, locale, icon and the three patch files remain package-root resources.
 
 Use the pinned pnpm version and Node 22.19+ on the Node 22 line or Node 24.11+ for development tools. `pnpm typecheck` checks both environments. `pnpm test` builds a temporary candidate and runs Host, Client and template regressions. `pnpm check:dist` rebuilds without replacing working lib, compares the full generated set, checks the packed entries/maps/resources and installs the tarball in a temporary project. `pnpm check` reuses one candidate build for tests and distribution checks. Installation loads committed JS and never compiles TS or writes a daily Profile during checks.

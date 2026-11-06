@@ -1,4 +1,4 @@
-# dsh-mode-mod bundle patch, layer 1 of 2: the plugin row itself, plus an
+# dsh-mode-mod bundle patch, layer 1 of 3: the plugin row itself, plus an
 # id-targeted ptc-runtime config override.
 #
 # The host half (src/index.ts) injects the seven development-goal
@@ -8,9 +8,10 @@
 # the /api/mode-mod/* routes; the browser half (./client) seats the goal
 # picker and project-default action beside the preset (mode) picker. The
 # Creator-mode preset-cordis override lives in the second layer,
-# presets/creator-cordis.patch.yml — each overlay file must be a single YAML
-# document (a multi-document stream fails to parse and the whole bundle is
-# skipped).
+# presets/creator-cordis.patch.yml, and the browser-only 资料搜索 preset in
+# the third, presets/web-research.patch.yml — each overlay file must be a
+# single YAML document (a multi-document stream fails to parse and the whole
+# bundle is skipped).
 - insert:
     - id: mode-mod
       name: '@local/dsh-mode-mod'

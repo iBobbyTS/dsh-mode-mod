@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs'
 // Only this package's generated runtime directory is owned by this build.
 rmSync('lib', { recursive: true, force: true })
 await build({
-  entry: ["src/index.ts", "src/store.ts", "src/presets.ts", "src/guidance.ts", "src/errors.ts"], outDir: 'lib', root: 'src', unbundle: true,
+  entry: ["src/index.ts", "src/store.ts", "src/presets.ts", "src/guidance.ts", "src/errors.ts", "src/web-research.ts"], outDir: 'lib', root: 'src', unbundle: true,
   platform: 'node', format: 'esm', outExtensions: () => ({ js: '.js' }), target: 'node22', sourcemap: true,
   clean: false, dts: false, deps: { neverBundle: [/.*/] },
 })

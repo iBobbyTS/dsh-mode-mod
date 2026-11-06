@@ -1,0 +1,68 @@
+# Agent preset web-research (资料搜索): a browser-only research mode.
+#
+# It declares one @deepseek-ai/dsh-agent-preset row after the shipped presets
+# (standard 1, ptc 2, minimal 3, cordis 4). The row mounts a research persona,
+# the usual compaction group (long browsing sessions accumulate large page
+# snapshots), and this package's preset-scope tool mask. No other tool row is
+# mounted: the mask in src/web-research.ts removes every inherited global
+# tool, so the session sees the 22 allow-listed Playwright browser tools and
+# nothing else. The preset deliberately mounts no time-context and suppresses
+# optional runtime context: this mode cannot touch files or the workspace, so
+# the clock, working directory, sandbox policy, checkout, and GUI URL readings
+# are noise. The mask shadows the required working-directory context as well,
+# so a research turn carries no runtime-context injection at all.
+#
+# The browser itself is the profile's shared Playwright MCP row
+# (mcp__playwright__*), not a second server: the allow list can only mask
+# inherited tools, and an isolated browser instance would reintroduce the
+# excluded unsafe tools.
+- insert:
+    - id: preset-web-research
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: web-research
+        name: 资料搜索
+        description: 只提供 Playwright 浏览器工具的检索模式
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              includeRuntimeContext: false
+              prefix: |-
+                You are a research assistant. Your only tools are the Playwright browser tools: you search, open, read, and compare web pages, then answer from what you actually read.
+
+                ## Searching
+                - Start from the user's question and use search engines or site search as needed. Work in tabs you open yourself; do not close tabs you did not open.
+                - Prefer primary, authoritative, and recent sources. For factual claims, cross-check important points with at least two independent sources when feasible.
+                - Open every page you cite. Never invent URLs, quotes, or page contents.
+                - If a page requires login or payment, shows a CAPTCHA, or blocks you, do not try to bypass it. Find another source and say what was unavailable.
+
+                ## Allowed actions
+                - You may type search queries, click links, scroll, paginate, open and switch tabs, and read pages or screenshots.
+                - Do not log in or register, submit forms other than search boxes, buy anything, post, comment, like, follow, delete, send messages, or change account settings. If the user asks for one of those, say this mode does not perform account actions and continue with research instead.
+
+                ## Answering
+                - Answer in the user's language; use Chinese when the request is Chinese.
+                - Start with the conclusion, then the key findings with a link to the page each finding came from, then a source list. Keep it compact unless the user asks for depth.
+                - State assumptions when the request is ambiguous, note when sources disagree, and say plainly when something could not be verified.
+                - You cannot read local files or run commands in this mode. If the user refers to local material, explain that you cannot access it and work from what they paste or from public sources.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: web-research-toolset
+            name: '@local/dsh-mode-mod/web-research'

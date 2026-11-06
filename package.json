@@ -12,6 +12,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./guidance": "./lib/guidance.js",
+    "./web-research": "./lib/web-research.js",
     "./client": "./lib/client.js",
     "./prompts/*": "./prompts/*",
     "./package.json": "./package.json",
@@ -33,7 +34,8 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml",
-        "./presets/creator-cordis.patch.yml"
+        "./presets/creator-cordis.patch.yml",
+        "./presets/web-research.patch.yml"
       ]
     },
     "client": {
