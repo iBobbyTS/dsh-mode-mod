@@ -47,6 +47,7 @@
     "react": "^18.2.0 || ^19.0.0"
   },
   "devDependencies": {
+    "js-yaml": "4.3.2",
     "react": "^18.2.0"
   }
 }

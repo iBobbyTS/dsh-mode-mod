@@ -148,9 +148,10 @@ as a separate, independently selectable dimension. Evolves
 
 ## Behavior notes
 
-- Subagent sessions (`parentSession` set) never get the goal section — the
+- Subagent sessions (`origin: "subagent"`) never get the goal section — the
   goal is a top-session dimension; they inherit the parent's mode (and get
-  the PTC guidance when that mode presents PTC).
+  the PTC guidance when that mode presents PTC). Ordinary seeded forks own
+  their goal even when an older header still records `parentSession`.
 - A stored project value naming an unknown goal id is ignored (falls through
   to the global default); store writes are atomic (tmp + rename) and a
   malformed store reads as empty. A value naming a deleted `custom-*` id
