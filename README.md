@@ -2,6 +2,10 @@
 
 Adds a separate system-prompt preset picker to DeepSeek Harness. Seven development goals and custom prompts can be selected independently of the native agent mode. The plugin also supplies Creator's source context and PTC call guidance.
 
+## Compatibility
+
+Verified: DSH 0.2.2-rc.1 (source review and automated checks); Desktop testing has not been completed.
+
 ## Features
 
 - Choose a goal beside the mode picker, in a new session or an existing conversation.
@@ -19,8 +23,6 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-mode-mod
 ```
 
 For Desktop, first launch it once, quit it, then use its bundled CLI with `--profile desktop`. Restart the target Host and refresh its client after installing or updating. A running Host does not reload linked code merely because files changed.
-
-Source and automated compatibility checks targeted DSH `0.2.2-rc.1`; a real Desktop UI acceptance pass is separate.
 
 ## Documentation
 
