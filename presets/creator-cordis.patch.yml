@@ -1,25 +1,16 @@
-# dsh-mode-mod bundle patch, layer 2 of 2: the Creator-mode (preset-cordis)
-# override carried over from dsh-creator-source-context.
-#
-# id-targeted override of the row the dsh-web-app bundle inserts: the persona
-# suffix that points plugin work at the local DeepSeek Harness reference
-# checkout, plus PTC tool presentation. Keep every other row identical to the
-# shipped cordis preset of the MATCHING checkout (currently tag
-# dsh-v0.2.1-rc.5, the version installed as the desktop app) so a diff
-# against packages/bundle/web-app/presets/cordis.patch.yml shows only these
-# two deltas. The run_code guidance section is host-injected per agent
-# (src/index.js) for PTC-presenting presets, so no row carries it here.
-# This file must stay a single YAML document.
+# Creator overlay for DSH 0.2.2-rc.1: release preset plus persona suffix and PTC executor.
 - id: preset-cordis
-  name: '@deepseek-ai/dsh-agent-preset'
   config:
     id: cordis
     order: 4
     plugins:
+      # Same persona as `standard`: tool descriptions and the skill catalog carry
+      # the operating detail, and the skills own the preset-authoring rules.
       - id: persona
         name: '@deepseek-ai/dsh-persona'
         config:
-          prefix: You are a coding agent powered by the {{model}} model.
+          prefix: >-
+            You are a coding agent powered by the {{model}} model.
           suffix: >-
             When asked to create a dsh plugin/mode or any add-ons, use `/Users/ibobby/Projects/dsh-plugin/reference/deepseek-harness` as source code reference. No extra authorizations required to pull, checkout this local repo. Do not use sectioned-feature-development unless user asks.
       - id: agent-instructions
@@ -36,6 +27,9 @@
         disabled: !!js process.platform !== 'win32'
       - id: tool-fs
         name: '@deepseek-ai/dsh-tool-fs'
+        config:
+          # Set true to add the apply_patch tool beside edit.
+          applyPatch: false
       - id: tool-fs-search
         name: '@deepseek-ai/dsh-tool-fs-search'
         config:
@@ -94,14 +88,13 @@
         config:
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
-          - id: tool-subagent-list-agents
-            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
           - id: tool-subagent
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
               provider: spawn
               toolName: subagent
-              modelSelectionSettings: true
+              modelSelection: true
+              modelDiscovery: true
           - id: tool-subagent-fork
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
@@ -133,10 +126,8 @@
             - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')
       - id: tool-skill
         name: '@deepseek-ai/dsh-tool-skill'
-      - id: tool-presentation
-        name: '@deepseek-ai/dsh-agent-tool-presentation'
-        config:
-          mode: ptc
+      - id: tool-executor-ptc
+        name: '@deepseek-ai/dsh-tool-executor-ptc'
       - id: present
         name: '@deepseek-ai/dsh-tool-present'
       - id: tool-plugin-manager

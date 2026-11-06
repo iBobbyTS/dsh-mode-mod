@@ -7,7 +7,7 @@
  * run before shipping a plugin update; on drift, rebuild
  * presets/creator-cordis.patch.yml from the newer checkout's
  * packages/bundle/web-app/presets/cordis.patch.yml, keeping exactly two
- * deltas: the persona suffix and the inserted tool-presentation row.
+ * deltas: the persona suffix and the inserted tool-executor-ptc row.
  */
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -47,7 +47,7 @@ const normalize = (rows) => {
     return value
   }
   const cleaned = walk(rows)
-    .filter((row) => row.id !== 'tool-presentation')
+    .filter((row) => row.id !== 'tool-executor-ptc')
     .map((row) => {
       if (row.id !== 'persona' || row.config === undefined) return row
       const config = { ...row.config }
@@ -61,7 +61,7 @@ const expected = normalize(shippedRows)
 const actual = normalize(overlayRows)
 if (expected !== actual) {
   console.error('mode-mod overlay drift: creator rows no longer match ' + shippedPath)
-  console.error('Rebuild presets/creator-cordis.patch.yml from this checkout, keeping only the persona suffix and tool-presentation deltas.')
+  console.error('Rebuild presets/creator-cordis.patch.yml from this checkout, keeping only the persona suffix and tool-executor-ptc deltas.')
   process.exit(1)
 }
-console.log('overlay ok: ' + overlayRows.length + ' rows match (persona suffix + tool-presentation deltas excluded)')
+console.log('overlay ok: ' + overlayRows.length + ' rows match (persona suffix + tool-executor-ptc deltas excluded)')
