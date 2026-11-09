@@ -341,31 +341,28 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     .catch((error) => { ctx.logger.warn('mode-mod: reading language requirements failed: ' + (errorDetails(error).message ?? error)) })
   void languageHydration
 
+  const makeWriteChain = () => { let tail: Promise<unknown> = Promise.resolve(); return <T>(fn: () => Promise<T>) => { const run = tail.then(fn); tail = run.catch(() => {}); return run } }
+
   /** Entry and selection documents are read-modify-write: run each chain one call at a time. */
-  let languageEntryWriteChain: Promise<unknown> = Promise.resolve()
-  const writeLanguageEntriesDoc = <T>(fn: () => Promise<T>) => {
-    const run = languageEntryWriteChain.then(fn)
-    languageEntryWriteChain = run.catch(() => {})
-    return run
-  }
-  let languageProjectWriteChain: Promise<unknown> = Promise.resolve()
-  const writeLanguageProjectsDoc = <T>(fn: () => Promise<T>) => {
-    const run = languageProjectWriteChain.then(fn)
-    languageProjectWriteChain = run.catch(() => {})
-    return run
-  }
+  const writeLanguageEntriesDoc = makeWriteChain()
+  const writeLanguageProjectsDoc = makeWriteChain()
 
   /** Every live agent (subagents included) by session id: the language delivery targets. */
   const languageAgents = new Map<string, Agent>()
 
+  /** Running at load: pre-instance claims are unknowable until the next idle transition. */
+  const languageAwaitingIdle = new Set<string>()
+
   /**
-   * Claimed requirement deliveries by message id. A claim moves the message out
+   * Claimed requirement deliveries by session and message id. A fork may
+   * inherit the same pending message id. A claim moves the message out
    * of the pending inbox before the asynchronous step preparation admits it to
    * history, so this window is the third dedupe state. An entry clears when the
    * matching user/message lands; a turn ending (including cancellation) clears
    * whatever never landed, releasing the suppression for self-healing.
    */
   const languageClaims = new Map<string, { agentId: string; key: string }>()
+  const languageClaimId = (sessionId: string, messageId: string) => JSON.stringify([sessionId, messageId])
 
   /** One serialized delivery pass per session, so concurrent triggers cannot double-enqueue. */
   const languageDeliveryTails = new Map<string, Promise<void>>()
@@ -383,14 +380,14 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
 
   /**
    * Deliver every selected requirement the session has neither committed nor
-   * been handed, in selection order. The decision is made once per pass: a
-   * message enqueued by this pass also suppresses a later identical selection
-   * in it.
+   * been handed, in selection order. Each pass re-scans the real history and
+   * inbox and checks unresolved claims to suppress cross-pass duplicates.
    * @param agent - the target agent.
    */
   const deliverLanguages = async (agent: Agent) => {
     await languageHydration
     if (languageAgents.get(agent.session.id) !== agent) return
+    if (languageAwaitingIdle.has(agent.session.id)) return
     if (typeof agent.send !== 'function') return
     const root = languageRootOf(agent)
     if (root === undefined) return
@@ -409,7 +406,6 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
       // their nearest step boundary; idle agents keep it durable until the next
       // waking message claims the whole next-step batch ahead of its own turn.
       agent.send(createLanguageMessage(entry), 'next-step', false)
-      pending.add(key)
     }
   }
 
@@ -447,18 +443,15 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
   /** In-flight freeze writes by session id, so a state read answers with the value it just pinned. */
   const pendingFreezes = new Map<string, Promise<void>>()
 
-  /** Override writes are read-modify-write of one document: run them one at a time. */
+  /** Latest override write, retained as the custom-preset deletion barrier. */
   let writeChain: Promise<unknown> = Promise.resolve()
+  /** Override writes are read-modify-write of one document: run them one at a time. */
+  const writeOverrides = makeWriteChain()
 
   /** Custom-preset writes are read-modify-write of one document: run them one at a time. */
-  let promptWriteChain: Promise<unknown> = Promise.resolve()
-  const writePrompts = <T>(fn: () => Promise<T>) => {
-    const run = promptWriteChain.then(fn)
-    promptWriteChain = run.catch(() => {})
-    return run
-  }
+  const writePrompts = makeWriteChain()
   const writeOverride = (sessionId: string, value: string | null | undefined) => {
-    const write = writeChain.then(async () => {
+    const write = writeOverrides(async () => {
       try {
         overridesSnapshot = value === undefined
           ? await readSessionOverrides()
@@ -632,12 +625,14 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     const offCreated = ctx.on('agent/created', ({ agent }) => { register(agent) })
     const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
       languageAgents.delete(agent.session.id)
+      languageAwaitingIdle.delete(agent.session.id)
       for (const [messageId, claim] of languageClaims) {
         if (claim.agentId === agent.session.id) languageClaims.delete(messageId)
       }
     })
     const offStatus = ctx.on('agent/status', ({ agent, status }) => {
       if (status !== 'idle') return
+      languageAwaitingIdle.delete(agent.session.id)
       // A turn settled. A claim it never admitted is gone for good (cancelled
       // batch or rejected step), so clearing the window here is what lets the
       // next pass restore a requirement that never reached history.
@@ -649,13 +644,13 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     const offClaimed = ctx.on('agent/inbox/claimed', ({ agent, message }) => {
       const key = languageMessageKey(message)
       if (key === undefined) return
-      languageClaims.set(message.id, { agentId: agent.session.id, key })
+      languageClaims.set(languageClaimId(agent.session.id, message.id), { agentId: agent.session.id, key })
     })
-    const offSession = ctx.on('session/event', (_session, event) => {
+    const offSession = ctx.on('session/event', (session, event) => {
       if (event?.type !== 'user/message') return
       if (languageMessageKey(event.data) === undefined) return
       // Admission transfers suppression ownership from the claim to history.
-      languageClaims.delete((event.data as { id: string }).id)
+      languageClaims.delete(languageClaimId(session.id, (event.data as { id: string }).id))
     })
     // Agents that already exist when this plugin loads never repeat
     // agent/created. A running one may hold a claim from before this instance
@@ -665,7 +660,10 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     // guessing.
     for (const agent of ctx.get('agents')?.list?.() ?? []) {
       languageAgents.set(agent.session.id, agent)
-      if (agent.status === 'running') continue
+      if (agent.status === 'running') {
+        languageAwaitingIdle.add(agent.session.id)
+        continue
+      }
       queueLanguageDelivery(agent, 'load reconciliation')
     }
     return () => {
@@ -675,6 +673,7 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
       offClaimed?.()
       offSession?.()
       languageAgents.clear()
+      languageAwaitingIdle.clear()
       languageClaims.clear()
       languageDeliveryTails.clear()
     }
@@ -869,7 +868,7 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
               const records = new Map([...retireIds].map((sessionId) => [sessionId, retiredPrompts.get(sessionId)!]))
               // The retirement is a read-modify-write of the session document:
               // append it to the same chain as goal writes, never beside it.
-              const retireWrite = writeChain.then(() => retireSessionValues(records))
+              const retireWrite = writeOverrides(() => retireSessionValues(records))
               writeChain = retireWrite.catch(() => {})
               const overrides = await retireWrite
               return { doc, overrides }

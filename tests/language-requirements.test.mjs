@@ -485,6 +485,101 @@ test('a re-toggle during step preparation admits exactly one copy once preparati
   assert.equal(live.state.history.length, 1)
 })
 
+for (const trigger of ['re-select', 'body edit']) {
+  test(`hot reload defers ${trigger} inside a pre-instance claim window until idle`, async () => {
+    const h = home()
+    seed(h, { entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules')], projects: { [CWD]: [ENTRY_A] } })
+    const live = agentFor(LIVE, { cwd: CWD }, { status: 'running' })
+    const old = host()
+    old.emit('agent/created', { agent: live.agent })
+    await settle()
+    assert.equal(live.sent.length, 1)
+    const first = live.sent[0].message
+    claim(old, live, first)
+    assert.equal(live.state.inbox.nextStep.length, 0)
+    assert.equal(live.state.history.length, 0)
+
+    // A real new plugin instance cannot observe the old instance's claim table.
+    for (const dispose of old.effects) dispose?.()
+    const next = host([live.agent])
+    await settle()
+    assert.equal(live.sent.length, 1)
+    if (trigger === 're-select') {
+      assert.equal((await select(next, LIVE, [])).status, 200)
+      assert.equal((await select(next, LIVE, [ENTRY_A])).status, 200)
+    } else {
+      const edited = await updateEntry(next, ENTRY_A, { prompt: 'Updated Rust rules' })
+      assert.equal(edited.status, 200)
+      assert.equal(edited.body.entries[0].version, 2)
+    }
+    await settle()
+    assert.equal(live.sent.length, 1, 'every delivery trigger must defer until the unknown claim settles')
+    assert.equal(live.state.inbox.nextStep.length, 0)
+
+    // The original preparation completes, then the next idle transition can
+    // reconcile from history and deliver only a genuinely missing new version.
+    admit(next, live, first)
+    setStatus(next, live, 'idle')
+    await settle()
+    assert.deepEqual(keysOf(live.sent), trigger === 're-select'
+      ? [ENTRY_A + ':1'] : [ENTRY_A + ':1', ENTRY_A + ':2'])
+    for (const message of [...live.state.inbox.nextStep]) {
+      claim(next, live, message)
+      admit(next, live, message)
+    }
+    assert.equal(live.state.history.filter((event) => event.data.source.entryVersion === 1).length, 1)
+    await select(next, LIVE, [ENTRY_A])
+    await settle()
+    assert.equal(live.state.inbox.nextStep.length, 0, 'admitted copies stay deduplicated')
+  })
+}
+
+for (const admittedFirst of ['parent', 'fork']) {
+  test(`inherited pending copies retain per-session claim guards when ${admittedFirst} admits first`, async () => {
+    const h = home()
+    seed(h, { entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules')], projects: { [CWD]: [ENTRY_A] } })
+    const parent = agentFor(LIVE, { cwd: CWD })
+    const plugin = host()
+    plugin.emit('agent/created', { agent: parent.agent })
+    await settle()
+    assert.equal(parent.sent.length, 1)
+    const message = parent.sent[0].message
+    const fork = agentFor(OTHER, { cwd: CWD, parentSession: LIVE, isSeeded: true }, {
+      inbox: { nextStep: [structuredClone(message)] },
+    })
+    plugin.emit('agent/created', { agent: fork.agent })
+    await settle()
+    assert.equal(fork.sent.length, 0, 'the fork inherited the same pending message id')
+
+    for (const fixture of [parent, fork]) {
+      setStatus(plugin, fixture, 'running')
+      claim(plugin, fixture, message)
+      assert.equal(fixture.state.inbox.nextStep.length, 0)
+      assert.equal(fixture.state.history.length, 0)
+    }
+    const reselect = async () => {
+      assert.equal((await select(plugin, LIVE, [ENTRY_A])).status, 200)
+      await settle()
+      assert.equal(parent.sent.length, 1, 'the parent claim remains guarded')
+      assert.equal(fork.sent.length, 0, 'the fork claim remains guarded')
+    }
+    await reselect()
+
+    const [first, second] = admittedFirst === 'parent' ? [parent, fork] : [fork, parent]
+    admit(plugin, first, message)
+    setStatus(plugin, first, 'idle')
+    // Admission and idle cleanup in one session must preserve the other's claim.
+    await reselect()
+    admit(plugin, second, message)
+    setStatus(plugin, second, 'idle')
+    await reselect()
+    for (const fixture of [parent, fork]) {
+      assert.equal(fixture.state.history.length, 1, 'exactly one admitted copy per session')
+      assert.equal(fixture.state.inbox.nextStep.length, 0, 'no duplicate waits for a later step')
+    }
+  })
+}
+
 /* ------------------------------------------------------------------ */
 /* EX-010: cancellation clears the inbox; nothing is marked delivered  */
 /* ------------------------------------------------------------------ */

@@ -50,11 +50,10 @@ export interface Agent {
   /** Durable pending work. */
   readonly inbox?: AgentInbox
   /**
-   * Route identified input to an inbox boundary, optionally waking the driver.
-   * The language delivery engine only ever uses `('next-step', false)` — the
-   * harness `inject()` verb.
+   * Quietly queue identified input at the next step boundary: the harness
+   * `inject()` verb, without waking the driver.
    */
-  send?(message: InboxMessage, target: 'next-turn' | 'next-step', wakeup: boolean): void
+  send?(message: InboxMessage, target: 'next-step', wakeup: false): void
   ctx: {
     effect(fn: () => (() => void), label: string): unknown
     get(name: 'systemPrompt'): PromptService | undefined
