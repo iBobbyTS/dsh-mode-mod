@@ -21,6 +21,5 @@ export const PTC_GUIDANCE_TEXT = 'Tool-call argument reminder for run_code: its 
   + 'itself. Nested tool calls inside the program (for example a bash call) have their own '
   + 'separate `description` arguments; supplying one there never satisfies run_code, and '
   + 'an omitted top-level `description` rejects the whole call before the program runs. '
-  + 'Choose a run_code timeoutMs sufficient for combined inner waits, within the '
-  + 'runtime’s advertised limit. Nested tools retain their own '
-  + 'timeouts; a longer outer budget does not extend them or override cancellation.'
+  + 'Set timeouts only on individual tool calls inside run_code; omit run_code.timeoutMs '
+  + 'so the configured outer default applies. Inner-tool deadlines and user cancellation still apply.'

@@ -200,7 +200,7 @@
   list, and switching a session away from the mode lifts it when the agent's
   scope parent rebinds to the new preset.
 
-The PTC default and maximum timeout are one day, configured by the `ptc-runtime` override in `cordis.patch.yml`. An outer `run_code` budget must cover combined inner waits; inner tools retain their own deadlines. A running Host needs a restart to load changes to a linked plugin.
+The PTC default and maximum timeout are one day, configured by the `ptc-runtime` override in `cordis.patch.yml`. PTC and Creator guidance tells the agent to set timeouts on individual tool calls and omit `run_code.timeoutMs`, preserving the configured outer default. Inner-tool deadlines and user cancellation still apply. A running Host needs a restart to load changes to a linked plugin.
 
 
 ## Development and source checks
