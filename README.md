@@ -1,6 +1,6 @@
 # dsh-mode-mod
 
-Adds a separate system-prompt preset picker to DeepSeek Harness. Seven development goals and custom prompts can be selected independently of the native agent mode. The plugin also supplies Creator's source context, PTC call guidance, and the browser-only 资料搜索 (web research) mode.
+Adds a separate system-prompt preset picker to DeepSeek Harness. Seven development goals and custom prompts can be selected independently of the native agent mode. The plugin also supplies project-level language requirements injected as persistent context, Creator's source context, PTC call guidance, and the browser-only 资料搜索 (web research) mode.
 
 ## Compatibility
 
@@ -11,6 +11,7 @@ Verified: DSH 0.2.2-rc.1 (source review and automated checks); Desktop testing h
 - Choose a goal beside the mode picker, in a new session or an existing conversation.
 - Session choices persist; new sessions inherit the project default, then the global default. “None” explicitly disables a goal.
 - Manage custom prompts in Settings → 系统提示词管理.
+- Manage per-language requirement entries in Settings → 语言要求管理, then multi-select them per project beside the mode picker (new session) or in the conversation header. The selected text is injected as persistent context into every session of that project, subagents included, without changing the system prompt or waking an idle model; edits append the new version, unselecting deletes nothing, and a project with no selection injects nothing.
 - Ordinary forks own their goal selection. Subagents receive PTC guidance but no goal section.
 - The PTC default and maximum `run_code` timeout are one day. Inner tools keep their own deadlines.
 - `资料搜索` mode: a browser-only research session with exactly 22 Playwright browser tools. `browser_run_code_unsafe`, `browser_file_upload`, and `browser_drop` are excluded; every non-browser tool (bash, files, web search/fetch, subagents, PTC `run_code`, other MCP servers) is masked for that mode only. It reuses the profile's shared Playwright browser, hides the MCP resource section, non-browser MCP server descriptions, deployment file/GUI guidance, the generic harness identity line, and runtime/time context injections from its prompt (the research persona is the whole system prompt), and answers conclusion-first with links to the pages it actually opened. The profile must mount Playwright MCP; without it the mode has no tools rather than falling back to other capabilities.

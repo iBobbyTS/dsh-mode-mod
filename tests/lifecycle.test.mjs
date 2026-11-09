@@ -15,8 +15,7 @@ function fixture() {
   const pluginEffects = []
   const agentEffects = []
   const sections = new Map()
-  const handlers = new Map()
-  let onCreated
+  const listeners = new Map()
   let active = true
   let preset = 'ptc'
   const registry = { composedPreset: () => preset }
@@ -38,9 +37,13 @@ function fixture() {
     get: (name) => (name === 'agents' ? { list: () => [] } : undefined),
     effect: (fn) => pluginEffects.push(fn()),
     on: (event, fn) => {
-      handlers.set(event, fn)
-      if (event === 'agent/created') onCreated = fn
-      return () => { handlers.delete(event); if (event === 'agent/created') onCreated = undefined }
+      const list = listeners.get(event) ?? []
+      list.push(fn)
+      listeners.set(event, list)
+      return () => {
+        const index = list.indexOf(fn)
+        if (index >= 0) list.splice(index, 1)
+      }
     },
   }
   const agent = {
@@ -52,7 +55,7 @@ function fixture() {
     },
   }
   apply(ctx)
-  onCreated({ agent })
+  for (const fn of [...(listeners.get('agent/created') ?? [])]) fn({ agent })
   return {
     sections,
     deactivate: () => { active = false },

@@ -45,19 +45,44 @@ import { errorDetails } from './errors.js'
  * skipping them would silently drop the goal section until the session is
  * reopened.
  *
+ * Project language requirements are a third, independent dimension:
+ *  - the entry checklist is global (plugin data, no built-ins); each project
+ *    stores its own multi-selection keyed by the same resolved project root;
+ *  - a selection or a body edit delivers a persistent user message through the
+ *    single Host verb `send(message, 'next-step', false)` — the harness
+ *    `inject()` that never wakes the driver. A busy agent claims it at its
+ *    nearest step boundary; an idle agent keeps it pending until the next
+ *    waking message, whose turn claims all next-step input before the
+ *    user-authored next-turn item, so the requirement enters the same step and
+ *    ahead of the user message at no extra model call;
+ *  - delivery dedup is a three-state predicate: the session history already
+ *    holds (entryId, version), the live inbox still pends it, or a claim for it
+ *    is unresolved (claimed by a open turn, not yet admitted to history). The
+ *    unresolved window defers the decision instead of re-enqueueing; a turn
+ *    that ends without admitting the claim releases the suppression, so a
+ *    cancellation or a rejected step heals on the next idle transition;
+ *  - every agent is covered, subagents included. No system-prompt section is
+ *    added or modified anywhere in this dimension.
+ *
  * Same-origin JSON API for the browser half:
  *   GET  /api/mode-mod/state?session=<id>   tier-by-tier goal state
  *   POST /api/mode-mod/goal                 { session, value } (value null = unselect; "none" = explicit none)
  *   POST /api/mode-mod/project              { session, value } (value null clears; "none" = explicit none)
+ *   GET  /api/mode-mod/languages?session=<id>   entries + this project's selection
+ *   POST /api/mode-mod/language            { action: "create" | "update" | "delete", id?, entry? }
+ *   POST /api/mode-mod/language-selection  { session, ids: string[] } (replaces the project selection)
  * @module @local/dsh-mode-mod
  */
 
+import { randomUUID } from 'node:crypto'
 import { GOALS, loadGoalTexts, renderGoalSection } from './presets.js'
 import { PTC_GUIDANCE_TEXT } from './guidance.js'
+import type { LanguageDocument, LanguageEntry, LanguageProjectStore } from './protocol.js'
 import {
-  clearProjectValues, createCustomPrompt, deleteCustomPrompt,
-  lookupProjectValue, readCustomPrompts, readSessionOverrides, readStore,
-  resolveProjectRoot, retireSessionValues, setProjectValue, setSessionOverride, updateCustomPrompt,
+  clearLanguageSelections, clearProjectValues, createCustomPrompt, createLanguageEntry, deleteCustomPrompt,
+  deleteLanguageEntry, lookupProjectValue, readCustomPrompts, readLanguageEntries, readLanguageProjects,
+  readSessionOverrides, readStore, resolveProjectRoot, retireSessionValues, setProjectLanguages,
+  setProjectValue, setSessionOverride, updateCustomPrompt, updateLanguageEntry,
 } from './store.js'
 
 /** Stable Cordis plugin name (matches the bundle patch insert id). */
@@ -71,6 +96,98 @@ const GUIDANCE_PRESETS = new Set(['ptc', 'cordis'])
 
 /** A session id the goal API accepts even when no live agent owns it (a closed session's stored value). */
 const SESSION_ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * Source kind carried by every injected language-requirement message. It is
+ * the structural identity the dedupe predicate scans for in history and in
+ * the live inbox; the body content is never compared.
+ */
+const LANGUAGE_SOURCE_KIND = 'mode-mod-language'
+
+/** An entry is deliverable once both its title and its body are non-empty. */
+function deliverableLanguageEntry(entry: LanguageEntry) {
+  return entry.title.trim() !== '' && entry.prompt.trim() !== ''
+}
+
+/**
+ * The model-facing body of one injected requirement. The heading is a stable
+ * product string, so an unchanged entry keeps the same content across
+ * restarts; only the entry body follows the user's edits.
+ * @param entry - the live entry row.
+ * @returns the message text.
+ */
+function languageRequirementText(entry: LanguageEntry) {
+  return '# Project language requirement: ' + entry.title.trim() + '\n\n' + entry.prompt.trim()
+}
+
+/**
+ * Structurally construct one durable user message. Every delivery uses a fresh
+ * message identity; the source carries the dedupe identity (entry id plus
+ * monotonic body version) and a display line.
+ * @param entry - the entry to inject.
+ * @returns a message accepted by the Host inbox.
+ */
+function createLanguageMessage(entry: LanguageEntry) {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: languageRequirementText(entry) }],
+    source: {
+      kind: LANGUAGE_SOURCE_KIND,
+      entryId: entry.id,
+      entryVersion: entry.version,
+      title: entry.title.trim(),
+    },
+  }
+}
+
+/**
+ * Read the dedupe identity out of an arbitrary message-shaped value.
+ * @param message - a history event payload or an inbox item.
+ * @returns "entryId:version", or undefined for anything this engine did not create.
+ */
+function languageMessageKey(message: unknown) {
+  if (message === null || typeof message !== 'object') return undefined
+  const source = (message as { source?: unknown }).source
+  if (source === null || typeof source !== 'object') return undefined
+  const record = source as Record<string, unknown>
+  if (record.kind !== LANGUAGE_SOURCE_KIND) return undefined
+  const entryId = record.entryId
+  const version = record.entryVersion
+  if (typeof entryId !== 'string' || typeof version !== 'number') return undefined
+  return entryId + ':' + version
+}
+
+/**
+ * Scan complete session history (fork-inherited prefix included) for delivered
+ * requirement markers.
+ * @param session - the session whose log to read.
+ * @returns the set of "entryId:version" markers already committed.
+ */
+function languageHistoryKeys(session: Agent['session']) {
+  const keys = new Set<string>()
+  const events = session.snapshotEvents?.() ?? session.ownEvents?.() ?? []
+  for (const event of events) {
+    if (event.type !== 'user/message') continue
+    const key = languageMessageKey(event.data)
+    if (key !== undefined) keys.add(key)
+  }
+  return keys
+}
+
+/**
+ * Scan the live durable inbox (both pending lists) for requirement markers.
+ * @param inbox - the agent's inbox, when the Host exposes one.
+ * @returns the set of "entryId:version" markers still pending.
+ */
+function languagePendingKeys(inbox: Agent['inbox']) {
+  const keys = new Set<string>()
+  for (const message of [...(inbox?.nextStep ?? []), ...(inbox?.nextTurn ?? [])]) {
+    const key = languageMessageKey(message)
+    if (key !== undefined) keys.add(key)
+  }
+  return keys
+}
 
 /** Loopback + same-origin browser markers, mirroring the host /api trust model. */
 function isLocalBrowserRequest(req: IncomingMessage) {
@@ -205,6 +322,127 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     .catch((error) => { ctx.logger.warn('mode-mod: reading plugin data failed: ' + (errorDetails(error).message ?? error)) })
     .finally(() => { hydrated = true })
   void hydration
+
+  /* ------------------------------------------------------------------
+   * Project language requirements: snapshots, write chains and delivery.
+   * ------------------------------------------------------------------ */
+
+  /** Global entry checklist; hydrated at boot and replaced by every mutation. */
+  let languageEntries: LanguageDocument = { version: 1, entries: [] }
+
+  /** Per-project multi-selection; hydrated at boot and replaced by every mutation. */
+  let languageProjects: LanguageProjectStore = { version: 1, projects: {} }
+
+  const languageHydration = Promise.all([readLanguageEntries(), readLanguageProjects()])
+    .then(([entries, projects]) => {
+      languageEntries = entries
+      languageProjects = projects
+    })
+    .catch((error) => { ctx.logger.warn('mode-mod: reading language requirements failed: ' + (errorDetails(error).message ?? error)) })
+  void languageHydration
+
+  /** Entry and selection documents are read-modify-write: run each chain one call at a time. */
+  let languageEntryWriteChain: Promise<unknown> = Promise.resolve()
+  const writeLanguageEntriesDoc = <T>(fn: () => Promise<T>) => {
+    const run = languageEntryWriteChain.then(fn)
+    languageEntryWriteChain = run.catch(() => {})
+    return run
+  }
+  let languageProjectWriteChain: Promise<unknown> = Promise.resolve()
+  const writeLanguageProjectsDoc = <T>(fn: () => Promise<T>) => {
+    const run = languageProjectWriteChain.then(fn)
+    languageProjectWriteChain = run.catch(() => {})
+    return run
+  }
+
+  /** Every live agent (subagents included) by session id: the language delivery targets. */
+  const languageAgents = new Map<string, Agent>()
+
+  /**
+   * Claimed requirement deliveries by message id. A claim moves the message out
+   * of the pending inbox before the asynchronous step preparation admits it to
+   * history, so this window is the third dedupe state. An entry clears when the
+   * matching user/message lands; a turn ending (including cancellation) clears
+   * whatever never landed, releasing the suppression for self-healing.
+   */
+  const languageClaims = new Map<string, { agentId: string; key: string }>()
+
+  /** One serialized delivery pass per session, so concurrent triggers cannot double-enqueue. */
+  const languageDeliveryTails = new Map<string, Promise<void>>()
+
+  const languageRootOf = (agent: Agent) => {
+    const cwd = agent.session.header.cwd
+    return cwd === undefined ? undefined : resolveProjectRoot(cwd)
+  }
+
+  const claimedKeysFor = (sessionId: string) => {
+    const keys = new Set<string>()
+    for (const claim of languageClaims.values()) if (claim.agentId === sessionId) keys.add(claim.key)
+    return keys
+  }
+
+  /**
+   * Deliver every selected requirement the session has neither committed nor
+   * been handed, in selection order. The decision is made once per pass: a
+   * message enqueued by this pass also suppresses a later identical selection
+   * in it.
+   * @param agent - the target agent.
+   */
+  const deliverLanguages = async (agent: Agent) => {
+    await languageHydration
+    if (languageAgents.get(agent.session.id) !== agent) return
+    if (typeof agent.send !== 'function') return
+    const root = languageRootOf(agent)
+    if (root === undefined) return
+    const selected = languageProjects.projects[root] ?? []
+    if (selected.length === 0) return
+    const byId = new Map(languageEntries.entries.map((entry) => [entry.id, entry]))
+    const history = languageHistoryKeys(agent.session)
+    const pending = languagePendingKeys(agent.inbox)
+    const claimed = claimedKeysFor(agent.session.id)
+    for (const id of selected) {
+      const entry = byId.get(id)
+      if (entry === undefined || !deliverableLanguageEntry(entry)) continue
+      const key = entry.id + ':' + entry.version
+      if (history.has(key) || pending.has(key) || claimed.has(key)) continue
+      // The single Host verb: next-step, never waking. Busy agents claim it at
+      // their nearest step boundary; idle agents keep it durable until the next
+      // waking message claims the whole next-step batch ahead of its own turn.
+      agent.send(createLanguageMessage(entry), 'next-step', false)
+      pending.add(key)
+    }
+  }
+
+  /**
+   * Queue one delivery pass for an agent.
+   * @param agent - the target agent.
+   * @param reason - the trigger, for diagnostics only.
+   */
+  const queueLanguageDelivery = (agent: Agent, reason: string) => {
+    const sessionId = agent.session.id
+    const previous = languageDeliveryTails.get(sessionId) ?? Promise.resolve()
+    const run = previous.then(() => deliverLanguages(agent)).catch((error) => {
+      ctx.logger.warn('mode-mod: language delivery for ' + sessionId + ' (' + reason + ') failed: ' + (errorDetails(error).message ?? error))
+    })
+    languageDeliveryTails.set(sessionId, run)
+    void run.finally(() => { if (languageDeliveryTails.get(sessionId) === run) languageDeliveryTails.delete(sessionId) })
+  }
+
+  /** Queue every live agent whose session resolves to one project root. */
+  const deliverLanguagesInProject = (root: string) => {
+    for (const agent of languageAgents.values()) {
+      if (languageRootOf(agent) === root) queueLanguageDelivery(agent, 'project selection')
+    }
+  }
+
+  /** Queue the live agents of every project that selects one entry (body edit delivery). */
+  const deliverEditedLanguage = (entryId: string) => {
+    for (const agent of languageAgents.values()) {
+      const root = languageRootOf(agent)
+      if (root === undefined) continue
+      if ((languageProjects.projects[root] ?? []).includes(entryId)) queueLanguageDelivery(agent, 'entry edit')
+    }
+  }
 
   /** In-flight freeze writes by session id, so a state read answers with the value it just pinned. */
   const pendingFreezes = new Map<string, Promise<void>>()
@@ -384,7 +622,65 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     }
   }, 'mode-mod: agent sections')
 
-  // 2. The same-origin API for the browser half.
+  // 2. Language-requirement delivery: created/resumed agents, status settles,
+  // claim tracking, and reconciliation of agents that predate this fiber.
+  ctx.effect(() => {
+    const register = (agent: Agent) => {
+      languageAgents.set(agent.session.id, agent)
+      queueLanguageDelivery(agent, 'agent/created')
+    }
+    const offCreated = ctx.on('agent/created', ({ agent }) => { register(agent) })
+    const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
+      languageAgents.delete(agent.session.id)
+      for (const [messageId, claim] of languageClaims) {
+        if (claim.agentId === agent.session.id) languageClaims.delete(messageId)
+      }
+    })
+    const offStatus = ctx.on('agent/status', ({ agent, status }) => {
+      if (status !== 'idle') return
+      // A turn settled. A claim it never admitted is gone for good (cancelled
+      // batch or rejected step), so clearing the window here is what lets the
+      // next pass restore a requirement that never reached history.
+      for (const [messageId, claim] of languageClaims) {
+        if (claim.agentId === agent.session.id) languageClaims.delete(messageId)
+      }
+      queueLanguageDelivery(agent, 'idle settle')
+    })
+    const offClaimed = ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+      const key = languageMessageKey(message)
+      if (key === undefined) return
+      languageClaims.set(message.id, { agentId: agent.session.id, key })
+    })
+    const offSession = ctx.on('session/event', (_session, event) => {
+      if (event?.type !== 'user/message') return
+      if (languageMessageKey(event.data) === undefined) return
+      // Admission transfers suppression ownership from the claim to history.
+      languageClaims.delete((event.data as { id: string }).id)
+    })
+    // Agents that already exist when this plugin loads never repeat
+    // agent/created. A running one may hold a claim from before this instance
+    // existed; that message is no longer in the inbox and not yet in history,
+    // and the log cannot reconstruct its identity. Its next idle transition is
+    // the first decidable point, so reconciliation waits for it instead of
+    // guessing.
+    for (const agent of ctx.get('agents')?.list?.() ?? []) {
+      languageAgents.set(agent.session.id, agent)
+      if (agent.status === 'running') continue
+      queueLanguageDelivery(agent, 'load reconciliation')
+    }
+    return () => {
+      offCreated?.()
+      offDisposed?.()
+      offStatus?.()
+      offClaimed?.()
+      offSession?.()
+      languageAgents.clear()
+      languageClaims.clear()
+      languageDeliveryTails.clear()
+    }
+  }, 'mode-mod: language delivery')
+
+  // 3. The same-origin API for the browser half.
   ctx.effect(() => {
     const display = (id: string | null | undefined) => id === null || id === undefined || id === 'none' ? null : goalName(id)
     /**
@@ -593,7 +889,154 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
         }
       },
     }
-    const disposers = [ctx.webServer.register(stateRoute), ctx.webServer.register(goalRoute), ctx.webServer.register(projectRoute), ctx.webServer.register(promptsRoute), ctx.webServer.register(promptRoute)]
+    /* ---- Project language requirements ------------------------------- */
+
+    /**
+     * Describe the global entries plus one session's project selection.
+     * @param record - the live session record, when there is one.
+     * @param sessionId - the session the caller asked about ('' for the manager).
+     * @returns the JSON body shared by every language route.
+     */
+    const languagePayload = (record: { agent: Agent; cwd?: string } | undefined, sessionId: string) => {
+      const root = record?.cwd === undefined ? undefined : resolveProjectRoot(record.cwd)
+      // A hand-edited or raced document can name an entry that no longer
+      // exists; the picker only ever sees live ids.
+      const known = new Set(languageEntries.entries.map((entry) => entry.id))
+      return {
+        sessionId,
+        projectRoot: root ?? null,
+        selected: root === undefined ? [] : [...(languageProjects.projects[root] ?? [])].filter((id) => known.has(id)),
+        entries: languageEntries.entries.map((entry) => ({ ...entry })),
+      }
+    }
+    /**
+     * Parse the optional session from a GET URL.
+     * @param req - the incoming request.
+     * @returns the session id, or ''.
+     */
+    const sessionFromUrl = (req: IncomingMessage) => {
+      try { return new URL(req.url ?? '/', 'http://mode-mod.local').searchParams.get('session') ?? '' } catch { return '' }
+    }
+    const languagesRoute: Route = {
+      method: 'GET',
+      path: '/api/mode-mod/languages',
+      handler: async (req, res) => {
+        if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
+        await languageHydration
+        const sessionId = sessionFromUrl(req)
+        json(res, 200, languagePayload(sessions.get(sessionId), sessionId))
+      },
+    }
+    /* Create/update/delete one language entry. An update whose normalized body
+     * actually changed is a new version and is delivered to every live agent
+     * of a project that selects the entry; an unchanged save delivers nothing. */
+    const languageRoute: Route = {
+      method: 'POST',
+      path: '/api/mode-mod/language',
+      handler: async (req, res) => {
+        if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
+        let body
+        try { body = await readJsonBody(req, 256 * 1024) } catch (error) {
+          json(res, errorDetails(error).code === 'body-too-large' ? 413 : 400, { error: 'invalid body' })
+          return
+        }
+        const action = body?.action
+        const id = typeof body?.id === 'string' ? body.id : ''
+        const sessionId = typeof body?.session === 'string' ? body.session : ''
+        await languageHydration
+        try {
+          if (action === 'create') {
+            const { doc, entry } = await writeLanguageEntriesDoc(() => createLanguageEntry(body.entry ?? {}))
+            languageEntries = doc
+            ctx.logger.info('mode-mod: created language entry ' + entry.id)
+            json(res, 200, languagePayload(sessions.get(sessionId), sessionId))
+            return
+          }
+          if (action === 'update') {
+            if (id === '') { json(res, 400, { error: 'missing entry id' }); return }
+            const outcome = await writeLanguageEntriesDoc(() => updateLanguageEntry(id, body.entry ?? {}))
+            languageEntries = outcome.doc
+            // The snapshot is current by the time this queues, so a pass reads
+            // the new version while the old one keeps whatever suppression its
+            // pending or committed copy earned.
+            if (outcome.bodyChanged) deliverEditedLanguage(outcome.entry.id)
+            ctx.logger.info('mode-mod: updated language entry ' + outcome.entry.id + ' to version ' + String(outcome.entry.version))
+            json(res, 200, languagePayload(sessions.get(sessionId), sessionId))
+            return
+          }
+          if (action === 'delete') {
+            if (id === '') { json(res, 400, { error: 'missing entry id' }); return }
+            const outcome = await writeLanguageEntriesDoc(async () => {
+              const removed = await deleteLanguageEntry(id)
+              // Publish the new checklist before clearing selections, so a
+              // selection write queued behind this one validates against it.
+              languageEntries = removed.doc
+              const projects = await writeLanguageProjectsDoc(() => clearLanguageSelections(id))
+              return { doc: removed.doc, projects }
+            })
+            languageEntries = outcome.doc
+            languageProjects = outcome.projects
+            // History keeps the injected text; nothing is delivered and nothing
+            // is rewritten in a running session.
+            ctx.logger.info('mode-mod: deleted language entry ' + id)
+            json(res, 200, languagePayload(sessions.get(sessionId), sessionId))
+            return
+          }
+          json(res, 400, { error: 'unknown action' })
+        } catch (error) {
+          const status = errorDetails(error).code === 'validation' ? 400 : errorDetails(error).code === 'not-found' ? 404 : 500
+          json(res, status, { error: errorDetails(error).message ?? String(error) })
+        }
+      },
+    }
+    /* Replace one project's multi-selection. Both picker seats use this route:
+     * additions deliver to every live agent of the project; removals deliver
+     * nothing and never delete committed context. */
+    const languageSelectionRoute: Route = {
+      method: 'POST',
+      path: '/api/mode-mod/language-selection',
+      handler: async (req, res) => {
+        if (!isLocalBrowserRequest(req)) { json(res, 403, { error: 'forbidden' }); return }
+        let body
+        try { body = await readJsonBody(req) } catch { json(res, 400, { error: 'invalid body' }); return }
+        await languageHydration
+        const sessionId = typeof body.session === 'string' ? body.session : ''
+        const record = sessions.get(sessionId)
+        if (record === undefined || record.cwd === undefined) { json(res, 404, { error: 'unknown session' }); return }
+        if (!Array.isArray(body.ids)) { json(res, 400, { error: 'ids must be an array' }); return }
+        const selectable = new Set(languageEntries.entries.filter(deliverableLanguageEntry).map((entry) => entry.id))
+        for (const id of body.ids) {
+          if (typeof id !== 'string' || !selectable.has(id)) {
+            json(res, 400, { error: 'unknown language entry', value: id ?? null })
+            return
+          }
+        }
+        const root = resolveProjectRoot(record.cwd)
+        const requested = body.ids as unknown[]
+        try {
+          let applied = false
+          await writeLanguageProjectsDoc(async () => {
+            // Re-check against the current checklist inside the write chain: a
+            // deletion that landed after this request validated must win.
+            const current = new Set(languageEntries.entries.filter(deliverableLanguageEntry).map((entry) => entry.id))
+            const ids = requested.filter((id): id is string => typeof id === 'string' && current.has(id))
+            if (ids.length !== requested.length) return
+            languageProjects = await setProjectLanguages(root, ids)
+            applied = true
+          })
+          if (!applied) { json(res, 400, { error: 'unknown language entry' }); return }
+          deliverLanguagesInProject(root)
+          ctx.logger.info('mode-mod: project ' + root + ' language requirements -> ' + (body.ids.length === 0 ? 'none' : (body.ids as string[]).join(', ')))
+          json(res, 200, languagePayload(record, sessionId))
+        } catch (error) {
+          json(res, 500, { error: 'write failed', detail: errorDetails(error).message ?? String(error) })
+        }
+      },
+    }
+    const disposers = [
+      stateRoute, goalRoute, projectRoute, promptsRoute, promptRoute,
+      languagesRoute, languageRoute, languageSelectionRoute,
+    ].map((route) => ctx.webServer.register(route))
     return () => { for (const dispose of disposers) dispose?.() }
   }, 'mode-mod: routes')
 }

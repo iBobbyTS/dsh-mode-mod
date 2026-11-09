@@ -57,15 +57,26 @@ function agentFor(sessionId, header) {
 /** Mount the plugin over a fake host and expose its routes and lifecycle handlers. */
 function host(agents = []) {
   const routes = new Map()
-  const handlers = new Map()
+  const listeners = new Map()
   const ctx = {
     logger: { info() {}, warn() {} },
     webServer: { register: (route) => { routes.set(route.path, route); return () => routes.delete(route.path) } },
     get: (name) => (name === 'agents' ? { list: () => agents } : undefined),
     effect: (fn) => fn(),
-    on: (event, fn) => { handlers.set(event, fn); return () => handlers.delete(event) },
+    on: (event, fn) => {
+      const list = listeners.get(event) ?? []
+      list.push(fn)
+      listeners.set(event, list)
+      return () => {
+        const index = list.indexOf(fn)
+        if (index >= 0) list.splice(index, 1)
+      }
+    },
   }
   apply(ctx)
+  // One dispatch per event reaches every listener, as the real Host does.
+  const handlers = new Map()
+  for (const [event, list] of listeners) handlers.set(event, (payload) => { for (const fn of [...list]) fn(payload) })
   return { routes, handlers }
 }
 

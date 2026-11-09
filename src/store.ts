@@ -1,4 +1,7 @@
-import type { ProjectStore, SessionStore, RetiredPrompt, PromptDocument, PromptEntry, PromptFields } from './protocol.js'
+import type {
+  ProjectStore, SessionStore, RetiredPrompt, PromptDocument, PromptEntry, PromptFields,
+  LanguageDocument, LanguageEntry, LanguageProjectStore,
+} from './protocol.js'
 import { errorDetails } from './errors.js'
 /**
  * Project-default persistence for the system-prompt-preset (goal) dimension —
@@ -419,5 +422,279 @@ export async function setProjectValue(root: string, value: string | null, home =
   if (value === null) delete store.projects[root]
   else store.projects[root] = value
   await writeStore(store, home)
+  return store
+}
+
+/* ------------------------------------------------------------------
+ * Project language requirements.
+ *
+ * Two documents under the same plugin data directory, both written
+ * atomically (tmp + rename) and both degrading to empty on malformed content:
+ *
+ *   language-requirements.json
+ *     { version: 1, entries: [{ id, title, prompt, version, createdAt, updatedAt }] }
+ *   project-language-requirements.json
+ *     { version: 1, projects: { "<absolute project root>": ["lang-...", ...] } }
+ *
+ * Entry ids are plugin-generated (`lang-<12 hex>`), never shipped. The entry
+ * `version` is a monotonic body revision: it advances only when the
+ * requirement text actually changes, so a save that leaves the body untouched
+ * never triggers a delivery and an A -> B -> A edit ends at a third version
+ * instead of colliding with the first.
+ * ------------------------------------------------------------------ */
+
+/** Field caps for one language entry; mirrored by the manager's maxLength attributes. */
+export const LANGUAGE_LIMITS = Object.freeze({
+  title: 80,
+  prompt: 64 * 1024,
+})
+
+/** Language entry ids are plugin-generated. */
+const LANGUAGE_ID_PATTERN = /^lang-[0-9a-f]{12}$/
+
+/** The language entry document path. */
+export function languageEntriesPath(home = dshHome()) {
+  return join(dataDir(home), 'language-requirements.json')
+}
+
+/** The per-project selection document path. */
+export function languageProjectsPath(home = dshHome()) {
+  return join(dataDir(home), 'project-language-requirements.json')
+}
+
+function emptyLanguageDocument(): LanguageDocument {
+  return { version: STORE_VERSION, entries: [] }
+}
+
+/**
+ * Read the language entries; malformed rows are skipped and a malformed
+ * document degrades to empty with a warning. Order is the creation order.
+ * @param home - the DSH home root.
+ * @returns the parsed document.
+ */
+export async function readLanguageEntries(home = dshHome()): Promise<LanguageDocument> {
+  try {
+    const raw = await readFile(languageEntriesPath(home), 'utf8')
+    const parsed: Record<string, unknown> = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+    if (parsed.version !== STORE_VERSION) throw new Error('unsupported version ' + parsed.version)
+    if (!Array.isArray(parsed.entries)) throw new Error('entries is not an array')
+    const seen = new Set<string>()
+    const entries: LanguageEntry[] = []
+    for (const entry of parsed.entries) {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+      if (typeof entry.id !== 'string' || !LANGUAGE_ID_PATTERN.test(entry.id) || seen.has(entry.id)) continue
+      seen.add(entry.id)
+      entries.push({
+        id: entry.id,
+        title: typeof entry.title === 'string' ? entry.title : '',
+        prompt: typeof entry.prompt === 'string' ? entry.prompt : '',
+        version: typeof entry.version === 'number' && Number.isSafeInteger(entry.version) && entry.version > 0
+          ? entry.version
+          : 1,
+        createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0,
+        updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0,
+      })
+    }
+    return { version: STORE_VERSION, entries }
+  } catch (error) {
+    if (errorDetails(error).code !== 'ENOENT') {
+      console.warn('mode-mod store: reading ' + languageEntriesPath(home) + ' failed (' + (errorDetails(error).message ?? error) + '); treating as empty')
+    }
+    return emptyLanguageDocument()
+  }
+}
+
+/**
+ * Persist the language entries atomically.
+ * @param doc - the complete document.
+ * @param home - the DSH home root.
+ */
+async function writeLanguageEntries(doc: LanguageDocument, home: string) {
+  const target = languageEntriesPath(home)
+  await mkdir(dirname(target), { recursive: true })
+  const tmp = join(parse(target).dir, '.language-requirements.' + process.pid + '.tmp')
+  await writeFile(tmp, JSON.stringify(doc, null, 2) + '\n', 'utf8')
+  await rename(tmp, target)
+}
+
+/**
+ * Normalize the multi-line requirement body. Outer whitespace is dropped;
+ * inner formatting (headings, lists, blank lines) is preserved.
+ * @param value - the raw body.
+ * @returns the trimmed text.
+ */
+function requirementText(value: unknown) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw presetError('validation', 'requirement text must be a string')
+  const text = value.replace(/\r\n/g, '\n').trim()
+  if (text.length > LANGUAGE_LIMITS.prompt) {
+    throw presetError('validation', 'requirement text exceeds ' + String(LANGUAGE_LIMITS.prompt) + ' characters')
+  }
+  return text
+}
+
+/**
+ * Validate the editable fields of one entry. Empty values are allowed: a fresh
+ * row is a draft until both its title and body are filled in.
+ * @param input - the request's entry payload.
+ * @param fallback - the current entry for a partial update.
+ * @returns the normalized title and requirement text.
+ */
+function normalizeLanguageEntry(input: unknown, fallback: Partial<LanguageEntry> = {}) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  return {
+    title: singleLine(source.title === undefined ? fallback.title : source.title, 'title', LANGUAGE_LIMITS.title),
+    prompt: requirementText(source.prompt === undefined ? fallback.prompt : source.prompt),
+  }
+}
+
+/**
+ * Append one language entry with a generated id and version 1.
+ * @param input - the editable fields (all optional).
+ * @param home - the DSH home root.
+ * @returns the new document and the created entry.
+ */
+export async function createLanguageEntry(input: unknown, home = dshHome()) {
+  const doc = await readLanguageEntries(home)
+  const normalized = normalizeLanguageEntry(input)
+  let id: string
+  do { id = 'lang-' + randomBytes(6).toString('hex') } while (doc.entries.some((entry) => entry.id === id))
+  const now = Date.now()
+  const entry: LanguageEntry = { id, ...normalized, version: 1, createdAt: now, updatedAt: now }
+  doc.entries.push(entry)
+  await writeLanguageEntries(doc, home)
+  return { doc, entry }
+}
+
+/**
+ * Update one language entry. Missing fields keep their current value, so the
+ * auto-save request may send the whole draft or only a subset. The version
+ * advances only when the normalized body actually changes.
+ * @param id - the language entry id.
+ * @param input - the editable fields.
+ * @param home - the DSH home root.
+ * @returns the new document, the updated entry, and whether its body changed.
+ */
+export async function updateLanguageEntry(id: string, input: unknown, home = dshHome()) {
+  const doc = await readLanguageEntries(home)
+  const index = doc.entries.findIndex((entry) => entry.id === id)
+  if (index === -1) throw presetError('not-found', 'unknown language entry: ' + id)
+  const current = doc.entries[index]
+  const normalized = normalizeLanguageEntry(input, current)
+  const bodyChanged = normalized.prompt !== current.prompt
+  const titleChanged = normalized.title !== current.title
+  const entry: LanguageEntry = {
+    ...current,
+    ...normalized,
+    version: current.version + (bodyChanged ? 1 : 0),
+    updatedAt: bodyChanged || titleChanged ? Date.now() : current.updatedAt,
+  }
+  doc.entries[index] = entry
+  await writeLanguageEntries(doc, home)
+  return { doc, entry, bodyChanged }
+}
+
+/**
+ * Remove one language entry.
+ * @param id - the language entry id.
+ * @param home - the DSH home root.
+ * @returns the new document and the removed entry.
+ */
+export async function deleteLanguageEntry(id: string, home = dshHome()) {
+  const doc = await readLanguageEntries(home)
+  const index = doc.entries.findIndex((entry) => entry.id === id)
+  if (index === -1) throw presetError('not-found', 'unknown language entry: ' + id)
+  const [removed] = doc.entries.splice(index, 1)
+  await writeLanguageEntries(doc, home)
+  return { doc, removed }
+}
+
+/**
+ * Read the per-project selections; malformed rows are skipped and a malformed
+ * document degrades to empty. Ids that do not match the entry format are
+ * dropped, so a hand-edited document cannot make the engine look up garbage.
+ * @param home - the DSH home root.
+ * @returns the parsed document.
+ */
+export async function readLanguageProjects(home = dshHome()): Promise<LanguageProjectStore> {
+  try {
+    const raw = await readFile(languageProjectsPath(home), 'utf8')
+    const parsed: Record<string, unknown> = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+    if (parsed.version !== STORE_VERSION) throw new Error('unsupported version ' + parsed.version)
+    if (parsed.projects === null || typeof parsed.projects !== 'object' || Array.isArray(parsed.projects)) {
+      throw new Error('projects is not an object')
+    }
+    const projects: Record<string, string[]> = {}
+    for (const [root, value] of Object.entries(parsed.projects)) {
+      if (!Array.isArray(value)) continue
+      const ids: string[] = []
+      for (const id of value) {
+        if (typeof id !== 'string' || !LANGUAGE_ID_PATTERN.test(id) || ids.includes(id)) continue
+        ids.push(id)
+      }
+      if (ids.length > 0) projects[root] = ids
+    }
+    return { version: STORE_VERSION, projects }
+  } catch (error) {
+    if (errorDetails(error).code !== 'ENOENT') {
+      console.warn('mode-mod store: reading ' + languageProjectsPath(home) + ' failed (' + (errorDetails(error).message ?? error) + '); treating as empty')
+    }
+    return { version: STORE_VERSION, projects: {} }
+  }
+}
+
+/**
+ * Persist the project selections atomically.
+ * @param store - the complete document.
+ * @param home - the DSH home root.
+ */
+async function writeLanguageProjects(store: LanguageProjectStore, home: string) {
+  const target = languageProjectsPath(home)
+  await mkdir(dirname(target), { recursive: true })
+  const tmp = join(parse(target).dir, '.project-language-requirements.' + process.pid + '.tmp')
+  await writeFile(tmp, JSON.stringify(store, null, 2) + '\n', 'utf8')
+  await rename(tmp, target)
+}
+
+/**
+ * Replace one project's multi-selection. Empty selections delete the entry
+ * instead of storing an empty list.
+ * @param root - the resolved project root.
+ * @param ids - the selected entry ids, in display order.
+ * @param home - the DSH home root.
+ * @returns the store after the update.
+ */
+export async function setProjectLanguages(root: string, ids: readonly unknown[], home = dshHome()) {
+  const store = await readLanguageProjects(home)
+  const next: string[] = []
+  for (const id of ids) {
+    if (typeof id !== 'string' || !LANGUAGE_ID_PATTERN.test(id) || next.includes(id)) continue
+    next.push(id)
+  }
+  if (next.length === 0) delete store.projects[root]
+  else store.projects[root] = next
+  await writeLanguageProjects(store, home)
+  return store
+}
+
+/**
+ * Remove one entry id from every project's selection (entry deletion).
+ * @param id - the deleted language entry id.
+ * @param home - the DSH home root.
+ * @returns the store after the update.
+ */
+export async function clearLanguageSelections(id: string, home = dshHome()) {
+  const store = await readLanguageProjects(home)
+  let changed = false
+  for (const [root, ids] of Object.entries(store.projects)) {
+    const next = ids.filter((value) => value !== id)
+    if (next.length === ids.length) continue
+    changed = true
+    if (next.length === 0) delete store.projects[root]
+    else store.projects[root] = next
+  }
+  if (changed) await writeLanguageProjects(store, home)
   return store
 }

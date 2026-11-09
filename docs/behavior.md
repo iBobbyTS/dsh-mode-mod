@@ -175,6 +175,63 @@
    opened and a source list, cross-checking key facts where feasible. A
    profile without Playwright MCP leaves the mode with no tools (never a
    fallback to other capabilities); its README documents that dependency.
+8. **Project language requirements (context injection)** — a third, independent
+   dimension beside goals and presets. The user's per-language requirements move
+   out of hand-maintained `AGENTS.md` files into a plugin-managed checklist:
+   - **Entries** are global
+     (`$DSH_HOME/plugin/data/mode-mod/language-requirements.json`, atomic
+     writes, ids `lang-<12 hex>`), each a name plus a multi-line requirement
+     body. There are no built-in entries. Settings → 语言要求管理 adds, edits
+     and deletes them; edits auto-save (no Save button) and an entry joins the
+     picker once both its name and body are non-empty. A body edit advances the
+     entry's monotonic `version` only when the normalized text actually
+     changes: saving unchanged text delivers nothing, and an A → B → A edit
+     ends at a third version instead of colliding with the first.
+   - **Selection is project-level only**
+     (`project-language-requirements.json`, absolute git-root keys,
+     longest-prefix lookup — the same `resolveProjectRoot` as goal defaults).
+     There is no session tier and no global default. The New Session seat and
+     the in-session header seat are two registrations of one multi-select
+     component over the same backend route; the menu stays open while rows
+     toggle and every selected row keeps its check.
+   - **Injection is a persistent user message, never a system-prompt section**:
+     role `user`, a fresh message identity, source kind
+     `mode-mod-language` carrying `entryId`, `entryVersion` and the entry
+     name, and the requirement text as content. It is delivered through the
+     single Host verb `send(message, 'next-step', false)` — the harness
+     `inject()`: a busy agent claims it at its nearest later step boundary; an
+     idle agent keeps it durably pending without waking the driver, and the
+     next waking message's turn claims all next-step input before its own
+     next-turn item, so the requirement enters the same step ahead of the user
+     message at no extra model call. `followup`/`steer` and next-turn delivery
+     are never used, and no prompt section is added or modified anywhere.
+   - **Coverage and dedupe.** Every agent is covered, subagents included. A new
+     or resumed agent is reconciled on creation; agents that predate a hot
+     reload are reconciled through the live agent registry. Delivery is
+     suppressed when the session history already contains
+     `(entryId, version)` (a fork's inherited prefix included), when the live
+     inbox still pends it, or when a claim for it is unresolved — claimed into
+     an open turn but not yet admitted to history. A reconciliation inside that
+     claim window defers instead of re-enqueueing; a turn that ends without
+     admitting the claim (a rejected step, or an inbox cleared by
+     cancellation) releases the suppression, and the next idle transition
+     restores the project requirement. A running agent reconciled at plugin
+     load waits for its next idle transition, because a claim that predates the
+     plugin instance cannot be reconstructed from the log. Cancellation can
+     therefore never mark a lost injection as delivered.
+   - **Changes.** Removing a selection delivers nothing and deletes nothing;
+     re-selecting an entry whose version is already in a session's history
+     delivers nothing there, while a session that never received it still does;
+     editing a body delivers the new version to every live session of a
+     project that selects the entry (append-only: the old text stays); deleting
+     an entry clears it from every project selection and keeps injected
+     history. A project with no selection injects nothing.
+   - Served by `GET /api/mode-mod/languages`,
+     `POST /api/mode-mod/language` (create/update/delete) and
+     `POST /api/mode-mod/language-selection` (replace one project's selection),
+     loopback + same-origin only. Both documents are atomic and a malformed
+     file reads as empty; the selection API rejects ids that are unknown or not
+     yet complete.
 
 
 ## Behavior notes
@@ -199,6 +256,12 @@
 - The 资料搜索 mask is preset-scoped: it never changes another mode's tool
   list, and switching a session away from the mode lifts it when the agent's
   scope parent rebinds to the new preset.
+- Language requirements, unlike the goal section, also cover subagents
+  (`origin: "subagent"`): every live agent of a project is a delivery target,
+  so a spawned subagent's first turn carries the project's current selection.
+- The language dimension is orthogonal to the goal tier model: it reads and
+  writes its own two documents, never changes a session value or project goal
+  default, and a language entry edit is not a preset selection.
 
 The PTC default and maximum timeout are one day, configured by the `ptc-runtime` override in `cordis.patch.yml`. PTC and Creator guidance tells the agent to set timeouts on individual tool calls and omit `run_code.timeoutMs`, preserving the configured outer default. Inner-tool deadlines and user cancellation still apply. A running Host needs a restart to load changes to a linked plugin.
 

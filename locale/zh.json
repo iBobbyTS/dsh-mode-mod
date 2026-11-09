@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "模式定制",
-    "description": "按开发目标划分的预设(内置 research/prototype/utility/host-extension/library/software/agent-runtime,以及设置页中管理的自定义系统提示词),支持全局/项目/会话三级默认,附 run_code description 提示、创造模式源码上下文与仅用浏览器的资料搜索模式。"
+    "description": "按开发目标划分的预设(内置 research/prototype/utility/host-extension/library/software/agent-runtime,以及设置页中管理的自定义系统提示词),支持全局/项目/会话三级默认,并提供按项目多选、以上下文消息注入的语言要求,附 run_code description 提示、创造模式源码上下文与仅用浏览器的资料搜索模式。"
   }
 }

@@ -1,18 +1,21 @@
 import * as React from 'react';
-import type { GoalState, PromptFields, PromptEntry, PromptPayload } from './protocol.js';
-import type { ClientContext, PickerProps } from './client-contract.js';
+import type { GoalState, LanguageEntry, LanguageState, PromptFields, PromptEntry, PromptPayload } from './protocol.js';
+import type { ClientContext, LanguagePickerProps, PickerProps } from './client-contract.js';
 import { primitives } from './client-contract.js';
 import { errorDetails } from './errors.js';
 const { useEffect, useRef, useState } = React;
 const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitives;
 
-		const API = {
-			state: (sessionId: string) => "/api/mode-mod/state?session=" + encodeURIComponent(sessionId),
-			goal: "/api/mode-mod/goal",
-			project: "/api/mode-mod/project",
-			prompts: "/api/mode-mod/prompts",
-			prompt: "/api/mode-mod/prompt",
-		};
+			const API = {
+				state: (sessionId: string) => "/api/mode-mod/state?session=" + encodeURIComponent(sessionId),
+				goal: "/api/mode-mod/goal",
+				project: "/api/mode-mod/project",
+				prompts: "/api/mode-mod/prompts",
+				prompt: "/api/mode-mod/prompt",
+				languages: (sessionId: string) => "/api/mode-mod/languages?session=" + encodeURIComponent(sessionId),
+				language: "/api/mode-mod/language",
+				languageSelection: "/api/mode-mod/language-selection",
+			};
 
 		function resolveApiUrl(path: string) {
 			if (typeof document === "undefined") return path;
@@ -45,6 +48,38 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 
 		function listPrompts() {
 			return fetchJson<PromptPayload>(API.prompts);
+		}
+
+		function listLanguages(sessionId: string) {
+			return fetchJson<LanguageState>(API.languages(sessionId));
+		}
+
+		function postLanguage(body: { action: string; id?: string; entry?: { title?: string; prompt?: string }; session?: string }, keepalive?: boolean) {
+			const payload = JSON.stringify(body);
+			let bytes = payload.length;
+			try { bytes = new TextEncoder().encode(payload).length; } catch {}
+			return fetchJson<LanguageState>(API.language, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: payload,
+				// Same 64 KiB browser limit as prompt saves: the debounce is the
+				// normal path, the unmount flush is best-effort for large bodies.
+				keepalive: keepalive === true && bytes < 60 * 1024,
+			});
+		}
+
+		function postLanguageSelection(sessionId: string, ids: string[]) {
+			return fetchJson<LanguageState>(API.languageSelection, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ session: sessionId, ids }),
+			});
+		}
+
+		/* Multi-select toggle: keep the store's display order, never duplicate an
+		 * id, and return the next selection. */
+		function toggleLanguageSelection(ids: readonly string[], id: string): string[] {
+			return ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
 		}
 
 		function postPrompts(body: { action: string; id?: string; preset?: Partial<PromptFields> }, keepalive?: boolean) {
@@ -106,6 +141,24 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 			cancel: "取消",
 			deleteNotice: "预设已删除。已经使用它的会话会保留当前系统提示词，直到你为会话选择新的预设。",
 			deletedSuffix: "（已删除）",
+			language: "语言要求",
+			languageNone: "未选择",
+			languageManageHint: "条目在设置 → 语言要求管理中维护；勾选结果注入本项目所有会话（含子代理）",
+			languageNoEntries: "还没有语言要求条目，请先在设置中新增。",
+			languageEmptySelection: "从左侧选择一个条目，或新增一个。",
+			languageLoadFailed: "加载语言要求失败。",
+			languageManagerTitle: "语言要求管理",
+			languageManageIntro: "维护可勾选的语言要求条目。条目全局共享；各项目在会话中多选勾选，勾选结果作为持久上下文消息注入到该项目所有会话。",
+			languageAdd: "新增语言要求",
+			languageNewTitle: "新的语言要求",
+			languageTitleLabel: "名称",
+			languageTitlePlaceholder: "例如：Rust",
+			languageBodyLabel: "要求正文",
+			languageBodyPlaceholder: "输入该语言的具体要求…",
+			languageDraftHint: "名称和正文都填写后，才会出现在会话的语言要求选择器中。",
+			languageDelete: "删除条目",
+			languageDeleteConfirm: "确认删除这个语言要求？所有项目的勾选会一并移除，已注入的内容会保留。",
+			languageDeleteNotice: "语言要求已删除。已注入到会话的内容会保留。",
 		};
 
 		const LABELS_EN = {
@@ -152,6 +205,24 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 			cancel: "Cancel",
 			deleteNotice: "Preset deleted. Sessions already using it keep their current system prompt until you choose a new preset for them.",
 			deletedSuffix: " (deleted)",
+			language: "Language requirements",
+			languageNone: "None selected",
+			languageManageHint: "Entries live in Settings → Language requirements; the selection is injected into every session of this project (subagents included)",
+			languageNoEntries: "No language requirements yet. Add one in Settings.",
+			languageEmptySelection: "Select an entry on the left, or add one.",
+			languageLoadFailed: "Failed to load language requirements.",
+			languageManagerTitle: "Language requirements",
+			languageManageIntro: "Maintain the selectable requirement entries. Entries are shared globally; each project multi-selects its own subset, and the selection is injected as persistent context into every session of that project.",
+			languageAdd: "Add language requirement",
+			languageNewTitle: "New language requirement",
+			languageTitleLabel: "Name",
+			languageTitlePlaceholder: "e.g. Rust",
+			languageBodyLabel: "Requirement",
+			languageBodyPlaceholder: "Enter the requirements for this language…",
+			languageDraftHint: "An entry appears in the session picker once both its name and requirement are filled in.",
+			languageDelete: "Delete entry",
+			languageDeleteConfirm: "Delete this language requirement? Every project selection is cleared; already injected context is kept.",
+			languageDeleteNotice: "Language requirement deleted. Context already injected into sessions is kept.",
 		};
 
 		/* The host app keeps <html lang> pointed at the active locale
@@ -465,6 +536,168 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 				// and the none row is a different (explicit) choice.
 				selectedId: state.retiredGoalName ? "__retired__" : (state.effectiveGoal ?? NONE_ID),
 				onSelect: (id) => { setGoalOpen(false); void pick(id === NONE_ID ? "none" : id); },
+				align: headerSeat ? "end" : "start",
+				portal: true,
+				anchor: trigger,
+			});
+		}
+
+		/* ------------------------------------------------------------------
+		 * Project language requirements: one multi-select picker, two seats.
+		 * The entry checklist is global; the selection is per project and both
+		 * seats write the same backend route. The menu stays open across row
+		 * clicks, so several entries can be toggled in one visit; Menu's
+		 * selectedIds marks every checked row.
+		 * ------------------------------------------------------------------ */
+
+		const EMPTY_LANGUAGE_ITEM = "__empty__";
+		const HINT_LANGUAGE_ITEM = "__manage__";
+
+		/* The UI kit ships no language/globe glyph, so this is a small inline
+		 * SVG in currentColor (two speech bubbles: the requirement text). */
+		function LanguageIcon({ size }: { size: number }) {
+			return React.createElement("svg", {
+				width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": true,
+				fill: "none", stroke: "currentColor", strokeWidth: "1.2",
+				strokeLinecap: "round", strokeLinejoin: "round",
+			},
+				React.createElement("path", { d: "M2.2 3.1h7.1v5.4H5.7L3.5 10.3V8.5H2.2z" }),
+				React.createElement("path", { d: "M7.9 6h5.9v4.2h-1.2v1.3l-1.9-1.3H7.9z" }));
+		}
+
+		/* Seat geometry mirrors the goal picker: the hero button sits beside the
+		 * mode control, the header chip beside the 22px mode chip. */
+		function languageTriggerStyle(headerSeat: boolean, active: boolean, busy: boolean): React.CSSProperties {
+			return headerSeat ? {
+				display: "inline-flex", alignItems: "center", gap: "4px",
+				height: "22px", padding: "0 4px 0 2px", border: "none",
+				borderRadius: "var(--dsw-radius-xs)",
+				background: active ? "var(--dsw-alias-interactive-bg-hover)" : "var(--dsw-alias-fill-tsp-secondary)",
+				color: busy
+					? "var(--dsw-alias-label-quaternary)"
+					: active ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-tertiary)",
+				fontSize: "12px", lineHeight: "22px", fontWeight: 500,
+				whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
+				maxWidth: "180px",
+			} : {
+				display: "inline-flex", alignItems: "center", gap: "4px",
+				minHeight: "28px", padding: "0 8px", border: "none",
+				borderRadius: "var(--dsw-radius-sm)",
+				background: active ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+				color: busy ? "var(--dsw-alias-label-quaternary)" : "var(--dsw-alias-label-primary)",
+				fontSize: "13px", lineHeight: "20px", fontWeight: 500,
+				whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
+				maxWidth: "min(100%, 240px)", marginLeft: "6px",
+			};
+		}
+
+		/* One line of the requirement body for the menu row's description. */
+		function languagePreview(entry: LanguageEntry) {
+			const line = entry.prompt.split("\n").map((value) => value.trim()).find((value) => value.length > 0) ?? "";
+			return line.length > 88 ? line.slice(0, 87) + "…" : line;
+		}
+
+		function ModeModLanguagePicker({ sessionId, language, seat }: LanguagePickerProps) {
+			useLabels();
+			const headerSeat = seat === "header";
+			const [state, setState] = useState<LanguageState | null>(null);
+			const [busy, setBusy] = useState(false);
+			const [open, setOpen] = useState(false);
+			const [hover, setHover] = useState(false);
+			// Re-read on open: entries can change in Settings while this picker
+			// stays mounted, and the project selection can change in the other seat.
+			const reloadRef = useRef(() => {});
+
+			useEffect(() => {
+				let alive = true;
+				let pending = 0;
+				let attempts = 0;
+				const load = () => {
+					clearTimeout(pending);
+					language.load(sessionId)
+						.then((next) => {
+							if (!alive) return;
+							setState(next);
+							// A session opened now may still be resuming: the API answers
+							// with no project root until the live agent exists.
+							if (next.projectRoot === null && attempts < 5) pending = setTimeout(load, 700 * ++attempts);
+						})
+						.catch(() => { if (alive) setState((current) => current ?? { sessionId, projectRoot: null, selected: [], entries: [] }); });
+				};
+				load();
+				reloadRef.current = load;
+				const onVisible = () => { if (document.visibilityState !== "hidden") load(); };
+				window.addEventListener("focus", load);
+				document.addEventListener("visibilitychange", onVisible);
+				return () => {
+					alive = false;
+					clearTimeout(pending);
+					window.removeEventListener("focus", load);
+					document.removeEventListener("visibilitychange", onVisible);
+				};
+			}, [sessionId, language]);
+
+			if (state === null) return null;
+
+			// Only complete entries are selectable; an empty draft stays in Settings.
+			const entries = state.entries.filter((entry) => entry.title.trim() !== "" && entry.prompt.trim() !== "");
+			const selected = state.selected ?? [];
+			const selectedEntries = entries.filter((entry) => selected.includes(entry.id));
+			const label = selectedEntries.length === 0
+				? L.language + " · " + L.languageNone
+				: L.language + " · " + selectedEntries.length;
+			const detail = selectedEntries.length === 0
+				? L.languageNone
+				: selectedEntries.map((entry) => entry.title).join(chineseLabelsActive() ? "、" : ", ");
+			const title = L.language + " · " + detail + "  ·  " + L.languageManageHint;
+
+			const toggle = async (id: string) => {
+				if (busy) return;
+				setBusy(true);
+				try {
+					setState(await language.selection(sessionId, toggleLanguageSelection(selected, id)));
+				} catch {} finally { setBusy(false); }
+			};
+
+			const trigger = React.createElement("button", {
+				type: "button",
+				ref: (node: HTMLButtonElement | null) => { if (!headerSeat) alignBesideModeControl(node); },
+				onClick: () => setOpen((value) => { if (!value) reloadRef.current(); return !value; }),
+				onMouseEnter: () => setHover(true),
+				onMouseLeave: () => setHover(false),
+				disabled: busy,
+				"aria-haspopup": "menu",
+				"aria-expanded": open,
+				"aria-label": L.language,
+				title,
+				style: languageTriggerStyle(headerSeat, hover || open, busy),
+			},
+				React.createElement(LanguageIcon, { key: "icon", size: headerSeat ? 14 : 16 }),
+				React.createElement("span", {
+					key: "label",
+					style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+				}, label),
+				React.createElement("span", {
+					key: "chevron",
+					style: { flex: "none", display: "inline-flex", color: "var(--dsw-alias-label-caption)" },
+				}, React.createElement(IconChevronDownOutlineRegular, null)));
+
+			const items = entries.length === 0
+				? [{ id: EMPTY_LANGUAGE_ITEM, label: menuRow(L.languageNoEntries, "", null), disabled: true }]
+				: entries.map((entry) => ({
+					id: entry.id,
+					label: menuRow(entry.title, languagePreview(entry), null),
+				}));
+			items.push({ id: HINT_LANGUAGE_ITEM, label: menuRow(L.languageManageHint, "", null), disabled: true });
+
+			return React.createElement(Menu, {
+				open,
+				onClose: () => setOpen(false),
+				items,
+				selectedIds: entries.filter((entry) => selected.includes(entry.id)).map((entry) => entry.id),
+				// A row click toggles and leaves the menu open: this is a checklist,
+				// not a one-shot switch.
+				onSelect: (id) => { if (id !== EMPTY_LANGUAGE_ITEM && id !== HINT_LANGUAGE_ITEM) void toggle(id); },
 				align: headerSeat ? "end" : "start",
 				portal: true,
 				anchor: trigger,
@@ -804,11 +1037,254 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 
 
 
+		/* ------------------------------------------------------------------
+		 * Settings section: language requirement management.
+		 * Entries are global and auto-save on a short debounce (plus blur and
+		 * unmount), so this page needs no Save button. The per-project selection
+		 * belongs to the two picker seats and never appears here.
+		 * ------------------------------------------------------------------ */
+
+		function LanguageListRow({ entry, selected, onSelect }: { entry: LanguageEntry; selected: boolean; onSelect(): void }) {
+			useLabels();
+			const [hover, setHover] = useState(false);
+			return React.createElement("button", {
+				type: "button",
+				onClick: onSelect,
+				onMouseEnter: () => setHover(true),
+				onMouseLeave: () => setHover(false),
+				title: languagePreview(entry) || entry.title || L.untitled,
+				"aria-pressed": selected,
+				style: {
+					display: "flex", flexDirection: "column", alignItems: "stretch", gap: "1px",
+					width: "100%", padding: "7px 9px", textAlign: "left",
+					border: "1px solid " + (selected ? "var(--dsw-alias-border-l2, rgba(0,0,0,.1))" : "transparent"),
+					borderRadius: "8px",
+					background: selected || hover ? "var(--dsw-alias-interactive-bg-hover, rgba(38,49,72,.06))" : "transparent",
+					color: "inherit", font: "inherit", cursor: "pointer", minWidth: 0,
+				},
+			},
+				React.createElement("span", { style: { display: "flex", alignItems: "center", gap: "6px", minWidth: 0 } },
+					React.createElement("span", { style: managerStyles.rowTitle }, entry.title || L.untitled)),
+				React.createElement("span", { style: managerStyles.rowDesc }, languagePreview(entry) || " "));
+		}
+
+		/* One entry: local draft + debounced write-through, with an unmount flush
+		 * so switching rows never loses the last keystrokes. */
+		function LanguageEntryEditor({ entry, onLocalChange, onSaved, onDeleted }: { entry: LanguageEntry; onLocalChange(next: { title: string; prompt: string }): void; onSaved(next: LanguageEntry): void; onDeleted(next: LanguageState): void }) {
+			useLabels();
+			const [draft, setDraft] = useState({ title: entry.title, prompt: entry.prompt });
+			const [status, setStatus] = useState("saved");
+			const [message, setMessage] = useState("");
+			const [confirming, setConfirming] = useState(false);
+			const [deleting, setDeleting] = useState(false);
+			const draftRef = useRef(draft);
+			const dirtyRef = useRef(false);
+			const aliveRef = useRef(true);
+			const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+			const chainRef = useRef(Promise.resolve());
+			const deletedRef = useRef(false);
+
+			const flush = (keepalive: boolean) => {
+				if (deletedRef.current) return;
+				if (timerRef.current !== null) { clearTimeout(timerRef.current); timerRef.current = null; }
+				if (!dirtyRef.current) return;
+				dirtyRef.current = false;
+				const payload = draftRef.current;
+				if (aliveRef.current) setStatus("saving");
+				const run = async () => {
+					try {
+						const response = await postLanguage({ action: "update", id: entry.id, entry: payload }, keepalive);
+						const saved = response.entries.find((value) => value.id === entry.id);
+						// The version advances only on a real body change; keep the
+						// manager's row in step with the server's monotonic number.
+						if (saved !== undefined) onSaved(saved);
+						if (!aliveRef.current) return;
+						setStatus(dirtyRef.current ? "dirty" : "saved");
+						setMessage("");
+					} catch (error) {
+						dirtyRef.current = true;
+						if (aliveRef.current) {
+							setStatus("error");
+							setMessage(errorDetails(error).message ?? "");
+						}
+					}
+				};
+				chainRef.current = chainRef.current.then(run, run);
+			};
+
+			const change = (field: "title" | "prompt", value: string) => {
+				const next = Object.assign({}, draftRef.current, { [field]: value });
+				draftRef.current = next;
+				dirtyRef.current = true;
+				setDraft(next);
+				setStatus("dirty");
+				onLocalChange(next);
+				if (timerRef.current !== null) clearTimeout(timerRef.current);
+				timerRef.current = setTimeout(() => flush(false), 500);
+			};
+
+			useEffect(() => {
+				aliveRef.current = true;
+				return () => {
+					aliveRef.current = false;
+					flush(true);
+				};
+			}, []);
+
+			const remove = async () => {
+				if (deleting) return;
+				setDeleting(true);
+				deletedRef.current = true;
+				if (timerRef.current !== null) { clearTimeout(timerRef.current); timerRef.current = null; }
+				try {
+					onDeleted(await postLanguage({ action: "delete", id: entry.id }));
+				} catch (error) {
+					deletedRef.current = false;
+					setDeleting(false);
+					setStatus("error");
+					setMessage(errorDetails(error).message ?? "");
+				}
+			};
+
+			const incomplete = !draft.title.trim() || !draft.prompt.trim();
+			return React.createElement("div", { style: managerStyles.preset },
+				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: 0 } },
+					React.createElement("span", { style: { fontSize: "14px", lineHeight: "22px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, draft.title.trim() || L.untitled),
+					React.createElement("span", { style: managerStyles.badge }, "v" + entry.version),
+					React.createElement("span", { style: { flex: 1 } }),
+					React.createElement("span", { style: status === "error" ? managerStyles.error : managerStyles.hint, title: message || undefined }, statusText(status, message))),
+				React.createElement(PromptTextField, { label: L.languageTitleLabel, value: draft.title, placeholder: L.languageTitlePlaceholder, maxLength: PROMPT_LIMITS.title, onChange: (value) => change("title", value), onBlur: () => flush(false) }),
+				React.createElement(PromptTextField, { label: L.languageBodyLabel, value: draft.prompt, placeholder: L.languageBodyPlaceholder, maxLength: PROMPT_LIMITS.prompt, multiline: true, fill: true, onChange: (value) => change("prompt", value), onBlur: () => flush(false) }),
+				incomplete ? React.createElement("div", { style: managerStyles.hint }, L.languageDraftHint) : null,
+				React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap", paddingTop: "2px" } },
+					confirming
+						? React.createElement(React.Fragment, null,
+							React.createElement("span", { style: managerStyles.hint }, L.languageDeleteConfirm),
+							React.createElement("button", { type: "button", style: managerStyles.button, onClick: () => setConfirming(false), disabled: deleting }, L.cancel),
+							React.createElement("button", { type: "button", style: managerStyles.danger, onClick: remove, disabled: deleting }, deleting ? L.saving : L.deleteYes))
+						: React.createElement("button", { type: "button", style: managerStyles.danger, onClick: () => setConfirming(true), disabled: deleting }, L.languageDelete)));
+		}
+
+		function LanguageManagerSection() {
+			useLabels();
+			const [data, setData] = useState<LanguageState | null>(null);
+			const [selectedId, setSelectedId] = useState<string | null>(null);
+			const [loading, setLoading] = useState(true);
+			const [error, setError] = useState("");
+			const [notice, setNotice] = useState("");
+			const [creating, setCreating] = useState(false);
+
+			const load = () => {
+				setLoading(true);
+				listLanguages("")
+					.then((next) => { setData(next); setError(""); })
+					.catch((failure) => setError(errorDetails(failure).message || L.languageLoadFailed))
+					.finally(() => setLoading(false));
+			};
+
+			useEffect(() => { load(); }, []);
+
+			const entries = data ? data.entries : [];
+
+			useEffect(() => {
+				if (data === null) return;
+				if (selectedId !== null && entries.some((entry) => entry.id === selectedId)) return;
+				setSelectedId(entries[0] ? entries[0].id : null);
+			}, [data, selectedId]);
+
+			const add = async () => {
+				if (creating) return;
+				setCreating(true);
+				setError("");
+				setNotice("");
+				try {
+					const next = await postLanguage({ action: "create", entry: { title: L.languageNewTitle, prompt: "" } });
+					setData(next);
+					const created = next.entries[next.entries.length - 1];
+					setSelectedId(created ? created.id : null);
+				} catch (failure) {
+					setError(errorDetails(failure).message || L.saveFailed);
+				} finally {
+					setCreating(false);
+				}
+			};
+
+			const handleLocalChange = (id: string, next: { title: string; prompt: string }) => {
+				setData((current) => current === null ? current : Object.assign({}, current, {
+					entries: current.entries.map((entry) => entry.id === id ? Object.assign({}, entry, next) : entry),
+				}));
+			};
+
+			const handleSaved = (saved: LanguageEntry) => {
+				setData((current) => current === null ? current : Object.assign({}, current, {
+					entries: current.entries.map((entry) => entry.id === saved.id ? saved : entry),
+				}));
+			};
+
+			const handleDeleted = (response: LanguageState) => {
+				setData(response);
+				const remaining = response.entries;
+				setSelectedId(remaining[0] ? remaining[0].id : null);
+				setNotice(L.languageDeleteNotice);
+			};
+
+			const selected = entries.find((entry) => entry.id === selectedId) || null;
+
+			return React.createElement("div", { style: managerStyles.page },
+				React.createElement("div", { style: managerStyles.header },
+					React.createElement("h2", { style: managerStyles.title }, L.languageManagerTitle),
+					React.createElement("p", { style: managerStyles.intro }, L.languageManageIntro)),
+				error ? React.createElement("div", { style: Object.assign({}, managerStyles.banner, managerStyles.error) }, error,
+					data === null ? React.createElement("button", { type: "button", style: Object.assign({}, managerStyles.button, { marginLeft: "8px", height: "26px", color: "inherit" }), onClick: load }, L.retry) : null) : null,
+				notice ? React.createElement("div", { style: managerStyles.banner }, notice) : null,
+				data === null
+					? React.createElement("div", { style: managerStyles.hint }, loading ? L.loading : L.languageLoadFailed)
+					: React.createElement("div", { style: managerStyles.body },
+						React.createElement("div", { style: managerStyles.list },
+							React.createElement("div", { style: managerStyles.listScroll },
+								entries.length === 0
+									? React.createElement("div", { style: Object.assign({}, managerStyles.hint, { padding: "2px 9px" }) }, L.languageNoEntries)
+									: entries.map((entry) => React.createElement(LanguageListRow, {
+										key: entry.id,
+										entry,
+										selected: selectedId === entry.id,
+										onSelect: () => { setSelectedId(entry.id); setNotice(""); },
+									}))),
+							React.createElement("div", { style: managerStyles.listFooter },
+								React.createElement("button", {
+									type: "button",
+									onClick: add,
+									disabled: creating,
+									style: {
+										display: "flex", alignItems: "center", justifyContent: "center",
+										width: "100%", height: "34px", border: "1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18))",
+										borderRadius: "8px", background: "transparent",
+										color: creating ? "var(--dsw-alias-label-caption, #adb2b8)" : "var(--dsw-alias-label-secondary, #61666b)",
+										font: "inherit", fontSize: "12px", cursor: creating ? "default" : "pointer",
+									},
+								}, "+ " + L.languageAdd))),
+						React.createElement("div", { style: managerStyles.editor },
+							selected === null
+								? React.createElement("div", { style: managerStyles.hint }, L.languageEmptySelection)
+								: React.createElement(LanguageEntryEditor, {
+									key: selected.id,
+									entry: selected,
+									onLocalChange: (next) => handleLocalChange(selected.id, next),
+									onSaved: handleSaved,
+									onDeleted: handleDeleted,
+								}))));
+		}
+
 		function apply(ctx: ClientContext) {
 			const face = {
 				load: loadState,
 				goal: (sessionId: string, value: string | null) => post(API.goal, sessionId, value),
 				project: (sessionId: string, value: string | null) => post(API.project, sessionId, value),
+			};
+			const languageFace = {
+				load: listLanguages,
+				selection: (sessionId: string, ids: string[]) => postLanguageSelection(sessionId, ids),
+				entry: (body: { action: string; id?: string; entry?: { title?: string; prompt?: string }; session?: string }) => postLanguage(body),
 			};
 			ctx.slots.inject("conversation.hero.options", () => ctx.slots.register({
 				name: "conversation.hero.options",
@@ -826,6 +1302,20 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 				order: 0,
 				inject: (sessionId) => ({ modeMod: { ...face, labels: L }, seat: "header" }),
 			}, ModeModGoalPicker));
+			// The language checklist sits beside the goal picker in both seats and
+			// writes the same project-level backend.
+			ctx.slots.inject("conversation.hero.options", () => ctx.slots.register({
+				name: "conversation.hero.options",
+				id: "mode-mod-language-picker",
+				order: 1,
+				inject: (sessionId) => ({ language: { ...languageFace }, seat: "hero" }),
+			}, ModeModLanguagePicker));
+			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
+				name: "conversation.session.header.actions",
+				id: "mode-mod-language-switch",
+				order: 1,
+				inject: (sessionId) => ({ language: { ...languageFace }, seat: "header" }),
+			}, ModeModLanguagePicker));
 			// Settings page, right after the shipped "Agent 预设" section.
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
@@ -833,7 +1323,14 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 				order: 25,
 				label: () => L.manageTitle,
 			}, PromptManagerSection));
+			// The language entry manager follows the system-prompt manager.
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "mode-mod-languages",
+				order: 26,
+				label: () => L.languageManagerTitle,
+			}, LanguageManagerSection));
 		}
 
-export { apply };
+export { apply, toggleLanguageSelection };
 export const inject = ['slots'];
