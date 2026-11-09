@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
+import { updateLanguageEntry } from '../lib/store.js'
 
 // Observe the real built components without a DOM. State setters, dependency
 // effects and keyed remounts are driven explicitly; timers and fetch are gated.
@@ -149,13 +153,20 @@ for (const newerEdit of [false, true]) {
       fields(reopened).body.onChange('D')
       fields(reopened).body.onBlur()
       await drain()
-      assert.equal(requests[3].payload.entry.prompt, 'D')
-      // The server saved C then D, but C's response arrives after D's response.
-      respond(3, 4)
-      await drain()
+      assert.equal(requests.length, 3, 'D waits for the old mount C acknowledgment in the shared entry queue')
     }
     respond(2, 3)
     await drain()
+    if (newerEdit) {
+      assert.equal(requests[3].payload.entry.prompt, 'D')
+      assert.equal(element().props.entry.prompt, 'D', 'the unmounted C acknowledgment preserves the newer D draft')
+      respond(3, 4)
+      await drain()
+      // Serialized requests now preclude an old network response overtaking
+      // the new save. Exercise the same metadata merge callback with a stale
+      // acknowledgment as a separate oracle for monotonic version ownership.
+      next.props.onSaved({ ...RUST, prompt: 'C', version: 3 })
+    }
     const current = newerEdit ? 'D' : 'C'
     assert.equal(element().props.entry.prompt, current, 'old component acknowledgments cannot replace the current draft')
     assert.equal(element().props.entry.version, newerEdit ? 4 : 3, 'late metadata cannot roll the version back')
@@ -176,3 +187,98 @@ for (const newerEdit of [false, true]) {
     assert.equal(h.timers.size, 0)
   })
 }
+
+test('a pending language save does not block a different entry', async () => {
+  const h = await loadedEditor()
+  const { requests, editor, fields, select, element, mount, respond } = h
+  fields().body.onChange('B')
+  fields().body.onBlur()
+  await drain()
+  assert.equal(requests[1].payload.id, RUST.id)
+  select(PYTHON.id)
+  editor.unmount()
+  const next = element()
+  const pythonEditor = mount(next.type, next.props)
+  fields(pythonEditor).body.onChange('Updated Python rules')
+  fields(pythonEditor).body.onBlur()
+  await drain()
+  assert.equal(requests.length, 3, 'the second entry sends while the first acknowledgment is held')
+  assert.equal(requests[2].payload.id, PYTHON.id)
+  requests[2].respond({ entries: [RUST, { ...PYTHON, ...requests[2].payload.entry, version: 2 }] })
+  await drain()
+  respond(1, 2)
+  await drain()
+  assert.equal(element().props.entry.version, 2)
+  assert.equal(fields(pythonEditor).body.value, 'Updated Python rules')
+  pythonEditor.unmount()
+  h.manager.unmount()
+  assert.equal(h.timers.size, 0)
+})
+
+test('language saves across row remounts keep the durable latest body and a later title-only save', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'mode-mod-editor-order-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const data = join(home, 'plugin/data/mode-mod')
+  await mkdir(data, { recursive: true })
+  const file = join(data, 'language-requirements.json')
+  await writeFile(file, JSON.stringify({ version: 1, entries: [RUST, PYTHON] }))
+  const h = await loadedEditor()
+  const { requests, editor, fields, select, element, mount } = h
+  const committed = []
+  const commit = async (index, respondNow = true) => {
+    const { payload } = requests[index]
+    const result = await updateLanguageEntry(payload.id, payload.entry, home)
+    committed.push({ body: result.entry.prompt, version: result.entry.version })
+    if (respondNow) requests[index].respond({ entries: result.doc.entries })
+    return result
+  }
+  fields().body.onChange('B')
+  fields().body.onBlur()
+  await drain()
+  const b = await commit(1, false) // Persist B, hold its acknowledgment.
+  fields().body.onChange('C')
+  select(PYTHON.id)
+  editor.unmount() // Queue C while B's acknowledgment is still pending.
+  await drain()
+  select(RUST.id)
+  const next = element()
+  const reopened = mount(next.type, next.props)
+  assert.equal(fields(reopened).body.value, 'C')
+  fields(reopened).body.onChange('D')
+  fields(reopened).body.onBlur()
+  await drain()
+
+  // Commit in actual request-arrival order, including anything the fresh
+  // mount sends while B's acknowledgment still holds the old mount's C.
+  let nextCommit = 2
+  const commitAvailable = async () => {
+    while (nextCommit < requests.length) {
+      await commit(nextCommit++)
+      await drain()
+    }
+  }
+  await commitAvailable()
+  requests[1].respond({ entries: b.doc.entries })
+  await drain()
+  await commitAvailable()
+  const durable = () => JSON.parse(readFileSync(file, 'utf8')).entries.find((entry) => entry.id === RUST.id)
+  t.diagnostic(JSON.stringify({ committed, durable: durable().prompt, visible: fields(reopened).body.value }))
+  assert.equal(durable().prompt, 'D', 'the latest authored body must win in the actual store document')
+  assert.equal(fields(reopened).body.value, 'D')
+  assert.equal(element().props.entry.prompt, 'D')
+  assert.equal(element().props.entry.version, durable().version)
+  assert.deepEqual(committed.map(({ body }) => body), ['B', 'C', 'D'])
+
+  fields(reopened).title.onChange('Rust stable')
+  fields(reopened).title.onBlur()
+  await drain()
+  await commitAvailable()
+  assert.equal(durable().title, 'Rust stable')
+  assert.equal(durable().prompt, 'D', 'a later title-only save must retain the durable latest body')
+  assert.equal(fields(reopened).body.value, 'D')
+  assert.equal(element().props.entry.version, durable().version)
+  assert.deepEqual(committed.map(({ body }) => body), ['B', 'C', 'D', 'D'])
+  reopened.unmount()
+  h.manager.unmount()
+  assert.equal(h.timers.size, 0)
+})

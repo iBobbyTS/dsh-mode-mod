@@ -1070,7 +1070,7 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 
 		/* One entry: local draft + debounced write-through, with an unmount flush
 		 * so switching rows never loses the last keystrokes. */
-		function LanguageEntryEditor({ entry, onLocalChange, onSaved, onDeleted }: { entry: LanguageEntry; onLocalChange(next: { title: string; prompt: string }): void; onSaved(next: LanguageEntry): void; onDeleted(next: LanguageState): void }) {
+		function LanguageEntryEditor({ entry, queueSave, onLocalChange, onSaved, onDeleted }: { entry: LanguageEntry; queueSave(run: () => Promise<void>): void; onLocalChange(next: { title: string; prompt: string }): void; onSaved(next: LanguageEntry): void; onDeleted(next: LanguageState): void }) {
 			useLabels();
 			const [draft, setDraft] = useState({ title: entry.title, prompt: entry.prompt });
 			const [status, setStatus] = useState("saved");
@@ -1081,7 +1081,6 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 			const dirtyRef = useRef(false);
 			const aliveRef = useRef(true);
 			const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-			const chainRef = useRef(Promise.resolve());
 			const deletedRef = useRef(false);
 
 			const flush = (keepalive: boolean) => {
@@ -1109,7 +1108,7 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 						}
 					}
 				};
-				chainRef.current = chainRef.current.then(run, run);
+				queueSave(run);
 			};
 
 			const change = (field: "title" | "prompt", value: string) => {
@@ -1173,6 +1172,16 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 			const [error, setError] = useState("");
 			const [notice, setNotice] = useState("");
 			const [creating, setCreating] = useState(false);
+			// A keyed editor's unmount flush must stay ahead of later drafts from
+			// its replacement. Keep each entry's sequence in the surviving manager.
+			const saveTails = useRef(new Map<string, Promise<void>>());
+			const queueSave = (id: string, run: () => Promise<void>) => {
+				const previous = saveTails.current.get(id) ?? Promise.resolve();
+				const next = previous.then(run, run);
+				saveTails.current.set(id, next);
+				const clear = () => { if (saveTails.current.get(id) === next) saveTails.current.delete(id); };
+				void next.then(clear, clear);
+			};
 
 			const load = () => {
 				setLoading(true);
@@ -1272,6 +1281,7 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 								: React.createElement(LanguageEntryEditor, {
 									key: selected.id,
 									entry: selected,
+									queueSave: (run) => queueSave(selected.id, run),
 									onLocalChange: (next) => handleLocalChange(selected.id, next),
 									onSaved: handleSaved,
 									onDeleted: handleDeleted,
