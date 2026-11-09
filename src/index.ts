@@ -410,7 +410,8 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
   }
 
   /**
-   * Queue one delivery pass for an agent.
+   * Queue one delivery pass for an agent. Creation awaits this promise before
+   * the Host releases the first waking input; mid-session triggers stay detached.
    * @param agent - the target agent.
    * @param reason - the trigger, for diagnostics only.
    */
@@ -422,6 +423,7 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     })
     languageDeliveryTails.set(sessionId, run)
     void run.finally(() => { if (languageDeliveryTails.get(sessionId) === run) languageDeliveryTails.delete(sessionId) })
+    return run
   }
 
   /** Queue every live agent whose session resolves to one project root. */
@@ -618,11 +620,11 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
   // 2. Language-requirement delivery: created/resumed agents, status settles,
   // claim tracking, and reconciliation of agents that predate this fiber.
   ctx.effect(() => {
-    const register = (agent: Agent) => {
+    const register = (agent: Agent, reason = 'agent/created') => {
       languageAgents.set(agent.session.id, agent)
-      queueLanguageDelivery(agent, 'agent/created')
+      return queueLanguageDelivery(agent, reason)
     }
-    const offCreated = ctx.on('agent/created', ({ agent }) => { register(agent) })
+    const offCreated = ctx.on('agent/created', ({ agent }) => register(agent))
     const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
       languageAgents.delete(agent.session.id)
       languageAwaitingIdle.delete(agent.session.id)
@@ -659,12 +661,12 @@ export function apply(ctx: HostContext, config: { defaultGoal?: unknown } = {}) 
     // the first decidable point, so reconciliation waits for it instead of
     // guessing.
     for (const agent of ctx.get('agents')?.list?.() ?? []) {
-      languageAgents.set(agent.session.id, agent)
       if (agent.status === 'running') {
+        languageAgents.set(agent.session.id, agent)
         languageAwaitingIdle.add(agent.session.id)
         continue
       }
-      queueLanguageDelivery(agent, 'load reconciliation')
+      void register(agent, 'load reconciliation')
     }
     return () => {
       offCreated?.()

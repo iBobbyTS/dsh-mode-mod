@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import fs from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test, { after } from 'node:test'
@@ -121,6 +123,9 @@ function host(agents = []) {
     effects,
     emit(event, ...args) {
       for (const fn of [...(listeners.get(event) ?? [])]) fn(...args)
+    },
+    async serial(event, ...args) {
+      for (const fn of [...(listeners.get(event) ?? [])]) await fn(...args)
     },
   }
 }
@@ -299,6 +304,60 @@ test('the project selection is stored per project and shared by every entry poin
 /* ------------------------------------------------------------------ */
 /* EX-001 / REQ-003 / REQ-010: new session, zero system prompt change  */
 /* ------------------------------------------------------------------ */
+
+for (const origin of ['session', 'subagent']) {
+  test(`awaited creation holds ${origin} first input behind language hydration`, async (t) => {
+    const h = home()
+    seed(h, {
+      entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules'), entryRow(ENTRY_B, 'Python', 'Python rules')],
+      projects: { [CWD]: [ENTRY_A, ENTRY_B] },
+    })
+    const readFile = fs.readFile
+    let releaseHydration, readsReady
+    const hydrationGate = new Promise((resolve) => { releaseHydration = resolve })
+    const heldReads = new Promise((resolve) => { readsReady = resolve })
+    let count = 0
+    const readMock = t.mock.method(fs, 'readFile', async (path, ...args) => {
+      const content = await readFile(path, ...args)
+      if (String(path).includes('language-requirements.json')) {
+        if (++count === 2) readsReady()
+        await hydrationGate
+      }
+      return content
+    })
+    syncBuiltinESMExports()
+    const live = agentFor(origin === 'subagent' ? SUBAGENT : LIVE, {
+      cwd: CWD, ...(origin === 'subagent' ? { origin, parentSession: LIVE, delegationDepth: 1 } : {}),
+    })
+    const plugin = host()
+    let creationReturned = false
+    const creation = plugin.serial('agent/created', { agent: live.agent }).then(() => { creationReturned = true })
+    try {
+      await heldReads
+      // Drain the current event-loop turn while both language reads stay held.
+      await new Promise(setImmediate)
+      assert.equal(creationReturned, false, 'Host creation must await the initial delivery promise')
+      assert.equal(live.sent.length, 0)
+      releaseHydration()
+      await creation
+      assert.deepEqual(keysOf(live.sent), [ENTRY_A + ':1', ENTRY_B + ':1'])
+      assert.ok(live.sent.every(({ target, wakeup }) => target === 'next-step' && wakeup === false))
+
+      // The Host releases waking input only after creation, then claims all
+      // next-step input before its first next-turn item (the native ordering).
+      live.state.inbox.nextTurn.push({ id: 'first-user', role: 'user' })
+      const firstClaim = [...live.state.inbox.nextStep.splice(0), ...live.state.inbox.nextTurn.splice(0, 1)]
+      assert.deepEqual(firstClaim.map((message) => message.source?.entryId ?? message.id), [ENTRY_A, ENTRY_B, 'first-user'])
+    } finally {
+      releaseHydration()
+      await creation
+      await new Promise(setImmediate)
+      for (const dispose of plugin.effects) dispose?.()
+      readMock.mock.restore()
+      syncBuiltinESMExports()
+    }
+  })
+}
 
 test('a new session receives every selected entry as persistent user context, with no prompt change', async () => {
   const h = home()

@@ -67,7 +67,9 @@ export interface AgentEvent { agent: Agent }
 export interface HostContext {
   logger: { warn(message: string): void; info(message: string): void }
   effect(fn: () => (() => void), label: string): unknown
-  on(name: 'agent/created' | 'agent/disposed', fn: (event: AgentEvent) => void): () => void
+  /** The Host awaits serial creation listeners before releasing initial input. */
+  on(name: 'agent/created', fn: (event: AgentEvent) => void | Promise<void>): () => void
+  on(name: 'agent/disposed', fn: (event: AgentEvent) => void): () => void
   /** Status transitions; `idle` settles every claim whose step never admitted it. */
   on(name: 'agent/status', fn: (event: { agent: Agent; status: string }) => void): () => void
   /** One message left the inbox into an open turn, before it is admitted to history. */

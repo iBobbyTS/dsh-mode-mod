@@ -1216,8 +1216,11 @@ const { Menu, IconChevronDownOutlineRegular, IconGoalOutlineRegular } = primitiv
 			};
 
 			const handleSaved = (saved: LanguageEntry) => {
+				// Local fields own the latest draft across edits and keyed remounts.
+				// Even an unmounted editor may acknowledge an older save: merge only
+				// monotonic server metadata, never its stale title or body.
 				setData((current) => current === null ? current : Object.assign({}, current, {
-					entries: current.entries.map((entry) => entry.id === saved.id ? saved : entry),
+					entries: current.entries.map((entry) => entry.id === saved.id ? Object.assign({}, entry, { version: Math.max(entry.version, saved.version) }) : entry),
 				}));
 			};
 
