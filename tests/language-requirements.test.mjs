@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -81,8 +81,9 @@ function agentFor(sessionId, header, { status = 'idle', history = [], inbox } = 
     session: {
       id: sessionId,
       header,
-      snapshotEvents: () => state.history,
-      ownEvents: () => state.history,
+      // The projection seam is the only history read; this fake exposes the
+      // committed log under a neutral name.
+      events: () => state.history,
     },
     get status() { return state.status },
     get inbox() { return state.inbox },
@@ -98,14 +99,44 @@ function agentFor(sessionId, header, { status = 'idle', history = [], inbox } = 
   return { agent, sections, sent, state }
 }
 
-function host(agents = []) {
+/**
+ * Fake session-projection registry. Unlike the framework's incremental drive,
+ * it re-folds a definition over the fixture's committed events on every read;
+ * both are pure, so the observable state is identical. `gated` holds the
+ * registration promise open so a test can prove no read precedes it.
+ */
+function projectionsFixture({ gated = false } = {}) {
+  const reads = []
+  const definitions = new Map()
+  let release
+  const opened = gated ? new Promise((resolve) => { release = resolve }) : Promise.resolve()
+  const service = {
+    async register(definition) {
+      definitions.set(definition.key, definition)
+      await opened
+      return {
+        stateOf(session) {
+          reads.push({ key: definition.key, sessionId: session.id })
+          let state = definition.stateSchema.parse(definition.init(session.header, 0))
+          for (const event of session.events()) state = definition.apply(state, event)
+          return state
+        },
+        async dispose() { definitions.delete(definition.key) },
+      }
+    },
+  }
+  return { service, reads, definitions, release: () => release?.() }
+}
+
+function host(agents = [], { projections = projectionsFixture() } = {}) {
   const routes = new Map()
   const listeners = new Map()
   const effects = []
   const ctx = {
     logger: { info() {}, warn() {} },
     webServer: { register: (route) => { routes.set(route.path, route); return () => routes.delete(route.path) } },
-    get: (name) => (name === 'agents' ? { list: () => agents } : undefined),
+    get: (name) => (name === 'agents' ? { list: () => agents }
+      : name === 'sessionProjections' ? projections.service : undefined),
     effect: (fn) => { effects.push(fn()) },
     on: (event, fn) => {
       const list = listeners.get(event) ?? []
@@ -121,6 +152,7 @@ function host(agents = []) {
   return {
     routes,
     effects,
+    projections,
     emit(event, ...args) {
       for (const fn of [...(listeners.get(event) ?? [])]) fn(...args)
     },
@@ -824,6 +856,104 @@ test('a running agent reconciled at load waits for its next idle transition', as
   await settle()
   assert.equal(running.sent.length, 1)
   assert.equal(running.sent[0].message.source.entryId, ENTRY_A)
+})
+
+/* ------------------------------------------------------------------ */
+/* EX-012 / REQ-013: the dedupe history lives in a session projection  */
+/* ------------------------------------------------------------------ */
+
+test('a fork folds its inherited delivered prefix and only gets the missing entry', async () => {
+  const h = home()
+  seed(h, {
+    entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules'), entryRow(ENTRY_B, 'Python', 'Python rules')],
+    projects: { [CWD]: [ENTRY_A, ENTRY_B] },
+  })
+  const inherited = {
+    type: 'user/message',
+    data: {
+      id: '33333333-4444-4555-8666-777777777777',
+      role: 'user',
+      content: [{ type: 'text', text: 'Rust rules' }],
+      source: { kind: SOURCE_KIND, entryId: ENTRY_A, entryVersion: 1, title: 'Rust' },
+    },
+  }
+  const fork = agentFor(OTHER, {
+    cwd: CWD, parentSession: LIVE, isSeeded: true, delegationDepth: 0,
+  }, { history: [inherited] })
+  const plugin = host()
+  plugin.emit('agent/created', { agent: fork.agent })
+  await settle()
+
+  // The projection cold-folds the inherited prefix, so ENTRY_A is suppressed
+  // and only the genuinely missing entry is delivered.
+  assert.deepEqual(keysOf(fork.sent), [ENTRY_B + ':1'])
+})
+
+test('a reloaded plugin cold-reads an existing session and deduplicates', async () => {
+  const h = home()
+  seed(h, {
+    entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules'), entryRow(ENTRY_B, 'Python', 'Python rules')],
+    projects: { [CWD]: [ENTRY_A, ENTRY_B] },
+  })
+  const committed = {
+    type: 'user/message',
+    data: {
+      id: '44444444-5555-4666-8777-888888888888',
+      role: 'user',
+      content: [{ type: 'text', text: 'Rust rules' }],
+      source: { kind: SOURCE_KIND, entryId: ENTRY_A, entryVersion: 1, title: 'Rust' },
+    },
+  }
+  const resumed = agentFor(LIVE, { cwd: CWD }, { history: [committed] })
+  const plugin = host([resumed.agent])
+  await settle()
+  assert.deepEqual(keysOf(resumed.sent), [ENTRY_B + ':1'])
+
+  // A later pass reads the same projection rather than rescanning history:
+  // the committed marker stays suppressed.
+  setStatus(plugin, resumed, 'idle')
+  await settle()
+  assert.deepEqual(keysOf(resumed.sent), [ENTRY_B + ':1'])
+})
+
+test('delivery reads the projection only after registration settles, then catches up', async () => {
+  const h = home()
+  seed(h, { entries: [entryRow(ENTRY_A, 'Rust', 'Rust rules')], projects: { [CWD]: [ENTRY_A] } })
+  const live = agentFor(LIVE, { cwd: CWD })
+  const projections = projectionsFixture({ gated: true })
+  const plugin = host([], { projections })
+  plugin.emit('agent/created', { agent: live.agent })
+  await settle()
+
+  assert.equal(projections.reads.length, 0, 'no projection read before registration settles')
+  assert.equal(live.sent.length, 0, 'no delivery decision before the projection is ready')
+
+  projections.release()
+  await settle()
+  assert.ok(projections.reads.length > 0, 'the deferred read catches up after registration')
+  assert.deepEqual(keysOf(live.sent), [ENTRY_A + ':1'])
+})
+
+test('plugin teardown releases the delivered-language projection registration', async () => {
+  home()
+  const projections = projectionsFixture()
+  const plugin = host([], { projections })
+  await settle()
+  assert.equal(projections.definitions.has('mode-mod-delivered-languages'), true)
+  for (const dispose of plugin.effects) dispose?.()
+  assert.equal(projections.definitions.has('mode-mod-delivered-languages'), false)
+})
+
+test('the delivery engine contains no deprecated session history reader', () => {
+  const src = new URL('../src/', import.meta.url)
+  const deprecated = ['snapshotEvents', 'ownEvents', 'eventAt']
+  for (const name of readdirSync(src)) {
+    if (!name.endsWith('.ts')) continue
+    const body = readFileSync(new URL(name, src), 'utf8')
+    for (const identifier of deprecated) {
+      assert.equal(body.includes(identifier), false, identifier + ' remains in src/' + name)
+    }
+  }
 })
 
 /* ------------------------------------------------------------------ */

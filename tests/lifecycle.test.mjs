@@ -34,7 +34,9 @@ function fixture() {
       return registry
     },
     webServer: { register: () => () => {} },
-    get: (name) => (name === 'agents' ? { list: () => [] } : undefined),
+    // Language delivery is not exercised here; the projection seam is a no-op fake.
+    get: (name) => (name === 'agents' ? { list: () => [] }
+      : name === 'sessionProjections' ? { register: async () => ({ stateOf: () => [], dispose: async () => {} }) } : undefined),
     effect: (fn) => pluginEffects.push(fn()),
     on: (event, fn) => {
       const list = listeners.get(event) ?? []

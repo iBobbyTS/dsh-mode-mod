@@ -208,17 +208,24 @@
    - **Coverage and dedupe.** Every agent is covered, subagents included. A new
      or resumed agent is reconciled on creation; agents that predate a hot
      reload are reconciled through the live agent registry. Delivery is
-     suppressed when the session history already contains
-     `(entryId, version)` (a fork's inherited prefix included), when the live
-     inbox still pends it, or when a claim for it is unresolved — claimed into
-     an open turn but not yet admitted to history. A reconciliation inside that
-     claim window defers instead of re-enqueueing; a turn that ends without
-     admitting the claim (a rejected step, or an inbox cleared by
-     cancellation) releases the suppression, and the next idle transition
-     restores the project requirement. A running agent reconciled at plugin
-     load waits for its next idle transition, because a claim that predates the
-     plugin instance cannot be reconstructed from the log. Cancellation can
-     therefore never mark a lost injection as delivered.
+     suppressed when the host-only session projection
+     `mode-mod-delivered-languages` already holds `(entryId, version)`, when
+     the live inbox still pends it, or when a claim for it is unresolved —
+     claimed into an open turn but not yet admitted to history. The projection
+     is a pure synchronous fold over committed session events: its first read
+     of a session cold-folds the full stored log (including a fork's
+     inherited prefix), and the registry then keeps it current as events
+     commit, so a plugin reload over an existing session deduplicates without
+     rescanning history. Registration is awaited at plugin load, and a
+     delivery decision never reads the projection before that registration
+     has settled. A reconciliation inside a claim window defers instead of
+     re-enqueueing; a turn that ends without admitting the claim (a rejected
+     step, or an inbox cleared by cancellation) releases the suppression, and
+     the next idle transition restores the project requirement. A running
+     agent reconciled at plugin load waits for its next idle transition,
+     because a claim that predates the plugin instance cannot be reconstructed
+     from the log. Cancellation can therefore never mark a lost injection as
+     delivered.
    - **Changes.** Removing a selection delivers nothing and deletes nothing;
      re-selecting an entry whose version is already in a session's history
      delivers nothing there, while a session that never received it still does;

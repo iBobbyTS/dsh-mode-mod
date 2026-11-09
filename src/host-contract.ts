@@ -36,10 +36,39 @@ export interface SessionEventView {
 export interface AgentSession {
   id: string
   header: { cwd?: string; origin?: string; parentSession?: unknown; isSeeded?: boolean; delegationDepth?: number }
-  /** Complete canonical history (seq 0 onward), including a fork's inherited prefix. */
-  snapshotEvents?(): readonly SessionEventView[]
-  /** Child-owned history after the fork-inherited prefix. */
-  ownEvents?(): readonly SessionEventView[]
+}
+
+/**
+ * One registered projection's live read handle. `stateOf` folds the session
+ * log lazily on first touch (including a fork's inherited prefix) and stays
+ * current as the registry drives committed events.
+ */
+export interface SessionProjectionHandle<S> {
+  /** Current state for one session; do not mutate the returned value. */
+  stateOf(session: AgentSession): S
+  /** Release this registration; retained readers keep working independently. */
+  dispose(): Promise<void>
+}
+
+/**
+ * Structural definition of one host-only projection unit. State must be plain
+ * JSON and every function synchronous and pure.
+ */
+export interface SessionProjectionDefinition<S> {
+  key: string
+  /** The Host schema's runtime shape; only `parse` is consulted. */
+  stateSchema: { parse(value: unknown): S }
+  /** State for the empty log. */
+  init(header: AgentSession['header'], inheritedEventCount: number): S
+  /** Pure transition; return the same reference when the event is not this unit's. */
+  apply(state: S, event: SessionEventView): S
+  /** Non-negative persisted-cache invalidation version. */
+  stateVersion: number
+}
+
+/** The Host session-projection service, as this plugin registers and releases units. */
+export interface SessionProjectionService {
+  register<S>(definition: SessionProjectionDefinition<S>): Promise<SessionProjectionHandle<S>>
 }
 
 export interface Agent {
@@ -77,5 +106,7 @@ export interface HostContext {
   /** Durable session events, used to observe a claimed message landing in history. */
   on(name: 'session/event', fn: (session: AgentSession, event: SessionEventView) => void): () => void
   get(name: 'agents'): { list(): Agent[] } | undefined
+  /** The projection registry that maintains derived session state. */
+  get(name: 'sessionProjections'): SessionProjectionService | undefined
   webServer: { register(route: Route): () => void }
 }

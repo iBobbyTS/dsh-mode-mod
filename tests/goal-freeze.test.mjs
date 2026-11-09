@@ -54,6 +54,11 @@ function agentFor(sessionId, header) {
   return { agent, sections }
 }
 
+/** Language delivery is not exercised here; the projection seam is a no-op fake. */
+const projectionsStub = {
+  register: async () => ({ stateOf: () => [], dispose: async () => {} }),
+}
+
 /** Mount the plugin over a fake host and expose its routes and lifecycle handlers. */
 function host(agents = []) {
   const routes = new Map()
@@ -61,7 +66,8 @@ function host(agents = []) {
   const ctx = {
     logger: { info() {}, warn() {} },
     webServer: { register: (route) => { routes.set(route.path, route); return () => routes.delete(route.path) } },
-    get: (name) => (name === 'agents' ? { list: () => agents } : undefined),
+    get: (name) => (name === 'agents' ? { list: () => agents }
+      : name === 'sessionProjections' ? projectionsStub : undefined),
     effect: (fn) => fn(),
     on: (event, fn) => {
       const list = listeners.get(event) ?? []
