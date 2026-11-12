@@ -1,4 +1,4 @@
-# Creator overlay for DSH 0.2.2-rc.1: release preset plus persona suffix and PTC executor.
+# Creator overlay for DSH 0.2.2-rc.2: release preset plus persona suffix and PTC executor.
 - id: preset-cordis
   config:
     id: cordis
@@ -11,6 +11,7 @@
         config:
           prefix: >-
             You are a coding agent powered by the {{model}} model.
+            You help the user customize DeepSeek Harness itself.
           suffix: >-
             When asked to create a dsh plugin/mode or any add-ons, use `/Users/ibobby/Projects/dsh-plugin/reference/deepseek-harness` as source code reference. No extra authorizations required to pull, checkout this local repo. Do not use sectioned-feature-development unless user asks.
       - id: agent-instructions
@@ -88,6 +89,8 @@
         config:
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
+            config:
+              interrupt: false
           - id: tool-subagent
             name: '@deepseek-ai/dsh-tool-subagent'
             config:

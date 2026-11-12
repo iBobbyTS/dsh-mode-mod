@@ -4,7 +4,7 @@ Adds a separate system-prompt preset picker to DeepSeek Harness. Seven developme
 
 ## Compatibility
 
-Verified: DSH 0.2.2-rc.1 (source review and automated checks); Desktop testing has not been completed.
+Verified: DSH 0.2.2-rc.2 (source review, focused automated checks and Web acceptance with all 14 local plugins). Web checks covered Creator persona/PTC, Utility goal selection independent of Standard mode, and an empty research model-tool request without Playwright after cold restore. Desktop interaction and online model/provider accounts have not been tested.
 
 ## Features
 

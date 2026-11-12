@@ -13,6 +13,8 @@ function fixture(initial) {
   const sections = new Map()
   const contexts = new Map()
   const tools = {
+    setExecutor: () => () => {},
+    guard: () => () => {},
     schemas: () => names.map((name) => ({ name })),
     restrict(filter) {
       filters.push(filter)
@@ -198,6 +200,8 @@ test('a rejected mask is reported and never escapes the refresh callback', () =>
   apply({
     logger: { warn(message) { warnings.push(message) }, info() {} },
     tools: {
+      setExecutor: () => () => {},
+      guard: () => () => {},
       schemas: () => [{ name: 'mcp__playwright__browser_navigate' }],
       restrict() { attempts += 1; throw new Error('unknown global tool') },
     },

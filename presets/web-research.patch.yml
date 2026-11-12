@@ -14,7 +14,8 @@
 #
 # The browser itself is the profile's shared Playwright MCP row
 # (mcp__playwright__*), not a second server: the allow list can only mask
-# inherited tools, and an isolated browser instance would reintroduce the
+# inherited tools; the preset executor and execution guard also cover Agent-owned
+# registrations. An isolated browser instance would reintroduce the
 # excluded unsafe tools.
 - insert:
     - id: preset-web-research

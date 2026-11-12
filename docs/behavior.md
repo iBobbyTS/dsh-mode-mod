@@ -139,7 +139,14 @@
    PTC `run_code`, web search/fetch, subagent/workflow, skills, goals, todo,
    present, plugin manager, MCP resource helpers, codegraph,
    external_subagent — is masked for these sessions only; other modes keep
-   their full tool lists. Because the profile's Playwright MCP row can
+   their full tool lists. Native restrictions preserve an Agent's own tool
+   registrations, so the same row selects a thin `NativeToolExecutor` subclass:
+   its `describe()` projects only the 22 allowed names into the final model
+   request. A preset-owned monotonic guard rejects non-browser raw/stale calls,
+   including Agent-owned tools registered after the preset mounts. Native code
+   still owns execution, approval, scheduling, cancellation and results. Scope
+   rebind on preset switching selects/restores the corresponding executor and
+   guard without changing the Agent-owned registrations. Because the profile's Playwright MCP row can
    register after the bundle patch, the mask recomputes on `tools/change`:
    before any browser tool exists it denies every global tool instead of
    leaving the catalog open, then switches to the allow list once the browser
@@ -283,7 +290,7 @@ pnpm check
 node tools/verify-template.mjs /absolute/path/to/deepseek-harness
 ```
 
-The latest source/automated compatibility check targeted DSH `0.2.2-rc.1`; this is not a Desktop UI acceptance result. Use the matching release checkout rather than assuming newer master has the same preset. The verifier compares conditional expressions as data and checks the native PTC executor row as well as the remaining Creator rows.
+The latest compatibility check targeted DSH `0.2.2-rc.2` with source review, focused contracts, Host/Client type checks and real Web acceptance with all 14 local plugins. Web acceptance covered Creator persona/PTC (`run_code` declared; `interrupt_agent` absent), Utility selected while native mode remained Standard, and the final research adapter request having no tools without Playwright after cold restore, with native and legacy MCP entries coexisting. Desktop interaction and online model/provider accounts remain untested. Use the matching release checkout rather than assuming newer master has the same preset. The verifier compares conditional expressions as data and checks the native PTC executor row as well as the remaining Creator rows.
 
 The default mode for a profile is configured by `agent-preset-registry`; `defaultGoal` in this plugin's bundle patch sets the independent goal default. Installation and updates use the [README](../README.md).
 
@@ -292,3 +299,6 @@ The default mode for a profile is configured by `agent-preset-registry`; `defaul
 Edit `src/*.ts`; `pnpm build:runtime` regenerates the committed Host modules and wrapped Client in `lib/`, with maps. The API's pure data types live in `src/protocol.ts`; Host and Client have separate type configurations. Prompts, locale, icon and the three patch files remain package-root resources.
 
 Use the pinned pnpm version and Node 22.19+ on the Node 22 line or Node 24.11+ for development tools. `pnpm typecheck` checks both environments. `pnpm test` builds a temporary candidate and runs Host, Client and template regressions. `pnpm check:dist` rebuilds without replacing working lib, compares the full generated set, checks the packed entries/maps/resources and installs the tarball in a temporary project. `pnpm check` reuses one candidate build for tests and distribution checks. Installation loads committed JS and never compiles TS or writes a daily Profile during checks.
+
+
+The focused rc.2 research boundary regression is `node --test tests/web-research-runtime.test.mjs tests/web-research.test.mjs` after `pnpm build:runtime`. It uses real rc.2 ToolsService, NativeToolExecutor, scopes, SystemPrompt and LlmRuntime, capturing final `LlmAdapter.stream(options).tools`. It covers initial research, ordinary-fork preset rebind, nested research, late Agent-owned/browser registrations, non-browser raw-call rejection, and Standard restoration. Only the remote model is scripted. The Web acceptance scope above was subsequently verified in the real rc.2 Web runtime with a local scripted adapter; Desktop and online providers remain untested.

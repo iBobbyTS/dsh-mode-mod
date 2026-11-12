@@ -3,11 +3,11 @@
  *
  * The preset mounts this row so its sessions see the Playwright browser tools
  * and nothing else. The restriction is registered in the PRESET scope, which
- * every agent of that preset inherits: inherited global tools (bash, fs, the
- * other MCP servers, PTC's run_code, …) are masked. The preset mounts no tool
- * rows of its own — an allow list may only name inherited tools, so a scoped
- * tool would not survive the mask either. The visible set is therefore exactly
- * the allow list.
+ * every agent of that preset inherits: inherited tools (bash, fs and other
+ * MCP servers) are masked. The host preserves an Agent's own registrations,
+ * so a thin NativeToolExecutor description filter enforces the final model
+ * allow list, and a scoped monotonic guard denies non-browser execution.
+ * Native execution retains all scheduling, approval and cancellation behavior.
  *
  * Three upstream tools are deliberately not in the allow list:
  * browser_run_code_unsafe (arbitrary JavaScript in the MCP server process,
@@ -33,6 +33,10 @@
  * never fall back to unrelated capabilities.
  * @module @local/dsh-mode-mod/web-research
  */
+
+import type { Context } from '@deepseek-ai/cordis'
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
+import type { ToolDefinition, ToolExecutor, ToolGuard, ToolModelInput } from '@deepseek-ai/dsh-tools'
 
 /** Cordis plugin name; distinct from the preset row id that mounts it. */
 export const name = 'mode-mod-web-research'
@@ -131,6 +135,8 @@ interface ToolFilter { allow?: string[]; deny?: string[] }
 
 /** The subset of the host tool registry used here. */
 interface ToolRegistry {
+  setExecutor(executor: ToolExecutor): () => void
+  guard(guard: ToolGuard): () => void
   /** Model-facing global tool schemas (the deployment view, not an agent view). */
   schemas(): readonly ToolSummary[]
   /** Mask inherited tools for the calling scope; returns the exact lifter. */
@@ -194,11 +200,28 @@ function filterKey(filter: ToolFilter): string {
 }
 
 /**
+ * Registry restrictions deliberately preserve an Agent's own registrations.
+ * The preset's native executor therefore owns the final declaration boundary;
+ * NativeToolExecutor retains execution, approvals, cancellation and settlement.
+ */
+class BrowserResearchExecutor extends NativeToolExecutor {
+  override describe(tools: readonly ToolDefinition[]): ToolModelInput {
+    const allowed = tools.filter(tool => BROWSER_TOOLS.includes(tool.name))
+    return { ...super.describe(allowed), knownNames: allowed.map(tool => tool.name) }
+  }
+}
+
+/**
  * Install the preset-scope mask and prompt-section shadows, and keep them in
  * step with the live registry.
  * @param ctx - the preset-scope context that mounts this row.
  */
 export function apply(ctx: WebResearchContext): void {
+  // Inherited monotonic guards also cover Agent-owned and late registrations,
+  // including stale/raw calls absent from the model's declaration list.
+  const releaseGuard = ctx.tools.guard(execution => BROWSER_TOOLS.includes(execution.name)
+    ? undefined : 'This research preset only permits its browser tool allow list.')
+  const releaseExecutor = ctx.tools.setExecutor(new BrowserResearchExecutor(ctx as unknown as Context))
   const mcpSectionOrder = ctx.systemPrompt.getSectionOrder('MCP_SERVERS')
   // The persona suppresses optional context; this empty optional entry shadows
   // the required working-directory context the suppression would keep.
@@ -269,6 +292,8 @@ export function apply(ctx: WebResearchContext): void {
   ctx.effect(() => () => {
     disposed = true
     offChange?.()
+    releaseExecutor()
+    releaseGuard()
     lift?.()
     lift = undefined
     installedKey = ''
