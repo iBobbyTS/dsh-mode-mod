@@ -6,7 +6,8 @@
   "description": "System-prompt-preset (development-goal) dimension layered on any mode, with three-tier defaults, host-injected run_code guidance, and the Creator-mode source context.",
   "icon": "./icon.svg",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.2-rc.1"
   },
   "main": "lib/index.js",
   "exports": {
